@@ -1,0 +1,16 @@
+data
+*.db
+*.db-shm
+*.db-wal
+src/tests
+Dockerfile
+docker-compose.yml
+.dockerignore
+ecosystem.config.cjs
+deploy.ps1
+.git
+npm-debug.log*
+brand
+scripts
+token
+DEPLOY.md

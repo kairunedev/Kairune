@@ -1,0 +1,315 @@
+'use strict';
+// Kairune Console — dashboard logic (vanilla JS, no build step).
+const API = '/api';
+let state = { agents: [], selectedId: null, meta: null };
+
+// ---- tiny helpers ----
+const $ = (sel, root) => (root || document).querySelector(sel);
+const el = (tag, cls, html) => {
+  const n = document.createElement(tag);
+  if (cls) n.className = cls;
+  if (html != null) n.innerHTML = html;
+  return n;
+};
+
+async function api(path, opts) {
+  const res = await fetch(API + path, Object.assign({
+    headers: { 'Content-Type': 'application/json' },
+  }, opts || {}));
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) throw new Error(data.error || ('HTTP ' + res.status));
+  return data;
+}
+
+function toast(msg, kind) {
+  const t = $('#toast');
+  t.textContent = msg;
+  t.className = 'toast ' + (kind || 'ok');
+  t.hidden = false;
+  clearTimeout(toast._t);
+  toast._t = setTimeout(() => { t.hidden = true; }, 3200);
+}
+
+function setConn(ok) {
+  const c = $('#conn');
+  c.className = 'conn ' + (ok ? 'ok' : 'err');
+  c.innerHTML = '<i></i> ' + (ok ? 'live' : 'offline');
+}
+
+function timeAgo(iso) {
+  const s = Math.floor((Date.now() - new Date(iso).getTime()) / 1000);
+  if (s < 60) return s + 's ago';
+  const m = Math.floor(s / 60); if (m < 60) return m + 'm ago';
+  const h = Math.floor(m / 60); if (h < 24) return h + 'h ago';
+  return Math.floor(h / 24) + 'd ago';
+}
+// ---- rendering: stats ----
+async function loadStats() {
+  const s = await api('/stats');
+  $('#stAgents').textContent = s.total_agents;
+  $('#stAtt').textContent = s.total_attestations;
+  $('#stPerms').textContent = s.active_permissions;
+  $('#stAvg').textContent = s.avg_score;
+}
+
+// ---- rendering: agent list ----
+function tierClass(t) { return 'tierpill tier-' + t; }
+
+async function loadAgents() {
+  const { agents } = await api('/agents');
+  state.agents = agents;
+  const list = $('#agentList');
+  list.innerHTML = '';
+  if (!agents.length) {
+    list.appendChild(el('div', 'empty', 'No agents yet. Register one to begin.'));
+    return;
+  }
+  agents.forEach((a) => {
+    const row = el('div', 'agent-row' + (a.id === state.selectedId ? ' active' : ''));
+    row.innerHTML =
+      '<div class="agent-score">' + a.score + '</div>' +
+      '<div class="agent-meta"><div class="h">' + a.handle + '</div>' +
+      '<div class="w">' + a.wallet.slice(0, 10) + '…' + a.wallet.slice(-4) + '</div></div>' +
+      '<div class="' + tierClass(a.tier) + '">T' + a.tier + '</div>';
+    row.addEventListener('click', () => selectAgent(a.id));
+    list.appendChild(row);
+  });
+}
+// ---- rendering: detail panel ----
+const CIRC = 2 * Math.PI * 53;
+
+async function selectAgent(id) {
+  state.selectedId = id;
+  document.querySelectorAll('.agent-row').forEach((r) => r.classList.remove('active'));
+  const data = await api('/agents/' + id);
+  renderDetail(data);
+  // highlight selected
+  const idx = state.agents.findIndex((a) => a.id === id);
+  const rows = document.querySelectorAll('.agent-row');
+  if (rows[idx]) rows[idx].classList.add('active');
+}
+
+function renderDetail(data) {
+  const a = data.agent;
+  $('#detailEmpty').hidden = true;
+  const body = $('#detailBody');
+  body.hidden = false;
+
+  const pct = a.score / (state.meta ? state.meta.max_score : 1000);
+  const offset = CIRC * (1 - pct);
+  const bd = a.breakdown || {};
+
+  let html = '';
+  html += '<div class="detail-inner">';
+  html += '<div class="detail-top"><div>';
+  html += '<p class="h">' + a.handle + '</p>';
+  html += '<p class="w">' + a.wallet + '</p>';
+  if (a.operator) html += '<p class="op">operator · ' + a.operator + '</p>';
+  html += '</div><div class="' + tierClass(a.tier) + '">' + (a.label || '') + '</div></div>';
+
+  // score hero ring
+  html += '<div class="score-hero"><div class="score-ring">';
+  html += '<svg width="120" height="120" viewBox="0 0 126 126">';
+  html += '<circle class="bg" cx="63" cy="63" r="53" fill="none" stroke-width="10"/>';
+  html += '<circle class="fg" cx="63" cy="63" r="53" fill="none" stroke-width="10" stroke-dasharray="' + CIRC.toFixed(2) + '" stroke-dashoffset="' + CIRC.toFixed(2) + '" id="ringFg"/>';
+  html += '</svg><div class="lbl"><b>' + a.score + '</b><span>score</span></div></div>';
+  html += '<div class="score-side">';
+  html += '<div class="bd"><span>baseline</span><b>' + (bd.baseline || 0) + '</b></div>';
+  html += '<div class="bd"><span>positive</span><b class="pos">+' + (bd.positive || 0) + '</b></div>';
+  html += '<div class="bd"><span>volume_bonus</span><b class="pos">+' + (bd.volumeBonus || 0) + '</b></div>';
+  html += '<div class="bd"><span>penalties</span><b class="neg">' + (bd.negative || 0) + '</b></div>';
+  html += '<div class="bd"><span>suggested_ceiling</span><b>$' + (a.suggested_daily_ceiling || 0) + '/day</b></div>';
+  html += '</div></div>';
+
+  // attestation actions
+  html += '<div class="subhead">record attestation</div><div class="act-row" id="attActions"></div>';
+
+  // permissions
+  html += '<div class="subhead">scoped permissions</div>';
+  html += '<form class="grant-form" id="grantForm">';
+  html += '<label>category<input type="text" name="category" required placeholder="compute" value="compute" /></label>';
+  html += '<label>ceiling USD<input type="number" name="ceiling" required min="1" step="1" placeholder="100" value="100" /></label>';
+  html += '<button type="submit" class="chip" id="grantSubmit">+ grant</button>';
+  html += '</form>';
+  html += '<div id="permList"></div>';
+
+  // history
+  html += '<div class="subhead">recent history</div><div class="hist" id="histList"></div>';
+
+  html += '</div>';
+  body.innerHTML = html;
+
+  // animate ring
+  requestAnimationFrame(() => {
+    const fg = $('#ringFg');
+    if (fg) fg.style.strokeDashoffset = String(offset);
+  });
+
+  renderAttActions(a.id);
+  renderPermList(data.permissions || [], a.id);
+  renderHist(data.attestations || []);
+  wireGrantForm(a);
+}
+const POSITIVE_KINDS = ['task_completed', 'clean_payment', 'peer_vouch'];
+const NEGATIVE_KINDS = ['dispute', 'chargeback', 'anomaly_flag'];
+
+function renderAttActions(agentId) {
+  const box = $('#attActions');
+  box.innerHTML = '';
+  POSITIVE_KINDS.concat(NEGATIVE_KINDS).forEach((kind) => {
+    const neg = NEGATIVE_KINDS.includes(kind);
+    const b = el('button', 'chip' + (neg ? ' neg' : ''), (neg ? '− ' : '+ ') + kind);
+    b.addEventListener('click', async () => {
+      try {
+        const r = await api('/agents/' + agentId + '/attestations', {
+          method: 'POST',
+          body: JSON.stringify({ kind }),
+        });
+        toast(kind + ' recorded → score ' + r.agent.score + ' (' + r.agent.label + ')', neg ? 'err' : 'ok');
+        await refreshAll();
+        selectAgent(agentId);
+      } catch (e) { toast(e.message, 'err'); }
+    });
+    box.appendChild(b);
+  });
+}
+
+function renderPermList(perms, agentId) {
+  const box = $('#permList');
+  box.innerHTML = '';
+  if (!perms.length) { box.appendChild(el('div', 'empty', 'no permissions granted')); return; }
+  perms.forEach((p) => {
+    const row = el('div', 'perm-row');
+    let inner = '<div class="perm-cat">' + p.category + '</div>';
+    inner += '<div class="perm-meta">$' + p.ceiling + '/' + p.period + '</div>';
+    if (p.status === 'active') {
+      inner += '<button class="mini-revoke" data-id="' + p.id + '">revoke</button>';
+    } else {
+      inner += '<span class="perm-status revoked">revoked</span>';
+    }
+    row.innerHTML = inner;
+    const rb = row.querySelector('.mini-revoke');
+    if (rb) rb.addEventListener('click', async () => {
+      try {
+        await api('/permissions/' + p.id + '/revoke', { method: 'POST' });
+        toast('permission revoked', 'ok');
+        selectAgent(agentId);
+        loadStats();
+      } catch (e) { toast(e.message, 'err'); }
+    });
+    box.appendChild(row);
+  });
+}
+
+function renderHist(atts) {
+  const box = $('#histList');
+  box.innerHTML = '';
+  if (!atts.length) { box.appendChild(el('div', 'empty', 'no activity yet')); return; }
+  atts.forEach((a) => {
+    const neg = a.weight < 0;
+    const row = el('div', 'hist-row');
+    row.innerHTML =
+      '<div class="hist-kind">' + a.kind + '</div>' +
+      '<div class="hist-w ' + (neg ? 'neg' : 'pos') + '">' + (neg ? '' : '+') + a.weight + '</div>' +
+      '<div class="hist-time">' + timeAgo(a.created_at) + '</div>';
+    box.appendChild(row);
+  });
+}
+
+function wireGrantForm(agent) {
+  const form = $('#grantForm');
+  if (!form) return;
+  form.addEventListener('submit', async (e) => {
+    e.preventDefault();
+    const btn = $('#grantSubmit');
+    const fd = new FormData(form);
+    const category = String(fd.get('category') || '').trim();
+    const ceiling = Number(fd.get('ceiling'));
+    if (!category) { toast('category required', 'err'); return; }
+    if (!ceiling || ceiling < 1) { toast('ceiling must be at least $1', 'err'); return; }
+    btn.disabled = true;
+    btn.textContent = 'granting…';
+    try {
+      const r = await api('/agents/' + agent.id + '/permissions', {
+        method: 'POST',
+        body: JSON.stringify({ category, ceiling, period: 'day', granted_by: 'console' }),
+      });
+      const p = r.permission;
+      toast(p.capped ? ('capped to $' + p.ceiling + ' by tier') : ('granted $' + p.ceiling + '/day'), 'ok');
+      selectAgent(agent.id);
+      loadStats();
+    } catch (err) { toast(err.message, 'err'); }
+    finally {
+      btn.disabled = false;
+      btn.textContent = '+ grant';
+    }
+  });
+}
+// ---- create agent modal ----
+function openModal() { $('#createModal').hidden = false; $('#createErr').hidden = true; }
+function closeModal() { $('#createModal').hidden = true; $('#createForm').reset(); }
+
+function wireModal() {
+  $('#openCreate').addEventListener('click', openModal);
+  $('#closeCreate').addEventListener('click', closeModal);
+  $('#cancelCreate').addEventListener('click', closeModal);
+  $('#createModal').addEventListener('click', (e) => {
+    if (e.target === $('#createModal')) closeModal();
+  });
+  $('#createForm').addEventListener('submit', async (e) => {
+    e.preventDefault();
+    const submitBtn = e.target.querySelector('button[type="submit"]');
+    const fd = new FormData(e.target);
+    const payload = {
+      handle: fd.get('handle').trim(),
+      wallet: fd.get('wallet').trim(),
+      operator: (fd.get('operator') || '').trim() || undefined,
+    };
+    submitBtn.disabled = true;
+    submitBtn.textContent = 'registering…';
+    $('#createErr').hidden = true;
+    try {
+      const r = await api('/agents', { method: 'POST', body: JSON.stringify(payload) });
+      closeModal();
+      toast('agent ' + r.agent.handle + ' registered', 'ok');
+      await refreshAll();
+      selectAgent(r.agent.id);
+    } catch (err) {
+      const box = $('#createErr');
+      box.textContent = err.message;
+      box.hidden = false;
+    } finally {
+      submitBtn.disabled = false;
+      submitBtn.textContent = 'Register';
+    }
+  });
+}
+
+// ---- refresh orchestration ----
+async function refreshAll() {
+  try {
+    await Promise.all([loadStats(), loadAgents()]);
+    setConn(true);
+  } catch (e) {
+    setConn(false);
+    toast('API error: ' + e.message, 'err');
+  }
+}
+
+// ---- boot ----
+async function boot() {
+  wireModal();
+  $('#refreshBtn').addEventListener('click', refreshAll);
+  const qs = $('#qsRegister');
+  if (qs) qs.addEventListener('click', openModal);
+  $('.logo').addEventListener('click', () => { location.href = '/'; });
+  try {
+    state.meta = await api('/meta');
+    setConn(true);
+  } catch (e) { setConn(false); }
+  await refreshAll();
+  // auto-refresh stats every 15 seconds
+  setInterval(loadStats, 15000);
+}
+
+document.addEventListener('DOMContentLoaded', boot);

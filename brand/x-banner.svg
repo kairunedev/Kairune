@@ -1,0 +1,65 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1500 500" width="1500" height="500">
+  <defs>
+    <radialGradient id="bg" cx="30%" cy="45%" r="70%">
+      <stop offset="0%" stop-color="#141518"/>
+      <stop offset="100%" stop-color="#0B0C0E"/>
+    </radialGradient>
+    <radialGradient id="spot" cx="72%" cy="50%" r="45%">
+      <stop offset="0%" stop-color="#D7FF3F" stop-opacity="0.10"/>
+      <stop offset="100%" stop-color="#D7FF3F" stop-opacity="0"/>
+    </radialGradient>
+  </defs>
+
+  <rect width="1500" height="500" fill="url(#bg)"/>
+  <rect width="1500" height="500" fill="url(#spot)"/>
+
+  <!-- right-side trust-graph node motif -->
+  <g stroke="#F3F3F0" stroke-opacity="0.14" stroke-width="1.4" fill="none">
+    <line x1="1040" y1="140" x2="1180" y2="205"/>
+    <line x1="1180" y1="205" x2="1300" y2="150"/>
+    <line x1="1180" y1="205" x2="1240" y2="330"/>
+    <line x1="1240" y1="330" x2="1360" y2="360"/>
+    <line x1="1300" y1="150" x2="1400" y2="240"/>
+    <line x1="1180" y1="205" x2="1090" y2="330"/>
+    <line x1="1090" y1="330" x2="1240" y2="330"/>
+  </g>
+  <g fill="#F3F3F0" fill-opacity="0.5">
+    <circle cx="1040" cy="140" r="4"/>
+    <circle cx="1300" cy="150" r="3.5"/>
+    <circle cx="1400" cy="240" r="4"/>
+    <circle cx="1090" cy="330" r="3.5"/>
+    <circle cx="1360" cy="360" r="4"/>
+  </g>
+  <!-- highlighted (trusted) nodes in signal color -->
+  <g fill="#D7FF3F">
+    <circle cx="1180" cy="205" r="6.5"/>
+    <circle cx="1240" cy="330" r="5.5"/>
+  </g>
+
+  <!-- logo mark -->
+  <g transform="translate(120,178) scale(2.25)">
+    <polygon points="32,4 56.78,18 56.78,46 32,60 7.22,46 7.22,18" fill="#D7FF3F"/>
+    <g fill="none" stroke="#10130A" stroke-width="5.4" stroke-linecap="round" stroke-linejoin="round">
+      <line x1="24" y1="19" x2="24" y2="45"/>
+      <line x1="24" y1="32" x2="39" y2="19"/>
+      <line x1="24" y1="32" x2="39" y2="45"/>
+    </g>
+  </g>
+
+  <!-- wordmark + tagline -->
+  <text x="290" y="235" font-family="-apple-system,BlinkMacSystemFont,Segoe UI,Roboto,Helvetica,Arial,sans-serif"
+        font-size="76" font-weight="700" fill="#F3F3F0" letter-spacing="-1.5">Kairune</text>
+  <text x="292" y="290" font-family="ui-monospace,SFMono-Regular,Menlo,Consolas,monospace"
+        font-size="27" fill="#D7FF3F">// the trust layer for agents that spend</text>
+  <text x="292" y="330" font-family="ui-monospace,SFMono-Regular,Menlo,Consolas,monospace"
+        font-size="20" fill="rgba(243,243,240,0.45)">verifiable reputation for AI that pays, subscribes &amp; hires</text>
+
+  <!-- launching-on-robinhood pill -->
+  <g transform="translate(292,368)">
+    <rect x="0" y="0" width="304" height="46" rx="23" fill="#00C805" fill-opacity="0.08" stroke="#00C805" stroke-opacity="0.34"/>
+    <circle cx="278" cy="23" r="4" fill="#00C805"/>
+    <image href="../assets/img/robinhood-feather-green.png" x="18" y="11" width="19" height="24" preserveAspectRatio="xMidYMid meet"/>
+    <text x="52" y="30" font-family="ui-monospace,SFMono-Regular,Menlo,Consolas,monospace"
+          font-size="19" fill="#F3F3F0">live on <tspan fill="#3CE85B" font-weight="600">Robinhood</tspan></text>
+  </g>
+</svg>

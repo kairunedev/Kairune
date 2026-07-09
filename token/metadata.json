@@ -1,0 +1,22 @@
+{
+  "name": "Kairune",
+  "symbol": "KAIRUNE",
+  "status": "live",
+  "chain": "Robinhood Chain",
+  "launchpad": "Noxa",
+  "contract_address": "0xc20f293b166eebdc88815a51c19e7b817134ed1f",
+  "description": "$KAIRUNE is the community token for Kairune — the trust layer for autonomous agents that spend. The Kairune console and REST API (registering agents, recording attestations, computing trust scores, granting scoped permissions) are live and free to use. On-chain token utility — paying to write to the trust graph, fee burns, and bonding/slashing against false flags — is on the roadmap and not yet wired into the product.",
+  "image": "https://kairune.online/assets/img/logo-mark-solid.png",
+  "external_url": "https://kairune.online",
+  "socials": {
+    "x": "https://x.com/usekairune"
+  },
+  "attributes": [
+    { "trait_type": "category", "value": "community" },
+    { "trait_type": "network", "value": "robinhood-chain" },
+    { "trait_type": "launchpad", "value": "noxa" },
+    { "trait_type": "utility_status", "value": "roadmap" }
+  ],
+  "disclaimer": "Community token, not financial advice. On-chain utility is planned but not yet implemented in the product. Always verify the contract address on the official channels (x.com/usekairune) before interacting, and do your own research.",
+  "_todo": "Confirm decimals and total supply from the Robinhood Chain block explorer and add them here."
+}

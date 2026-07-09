@@ -1,0 +1,14 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 560 160" width="560" height="160">
+  <rect width="560" height="160" fill="#0B0C0E"/>
+  <g transform="translate(40,48)">
+    <polygon points="32,6 54.52,19 54.52,45 32,58 9.48,45 9.48,19" fill="none" stroke="#D7FF3F" stroke-width="2.4" stroke-linejoin="round"/>
+    <g fill="none" stroke="#D7FF3F" stroke-width="5" stroke-linecap="round" stroke-linejoin="round">
+      <line x1="24" y1="19" x2="24" y2="45"/>
+      <line x1="24" y1="32" x2="39" y2="19"/>
+      <line x1="24" y1="32" x2="39" y2="45"/>
+    </g>
+    <circle cx="32" cy="6" r="3.1" fill="#D7FF3F"/>
+  </g>
+  <text x="150" y="92" font-family="-apple-system,Segoe UI,Helvetica,Arial,sans-serif" font-size="46" font-weight="650" letter-spacing="-0.5" fill="#F3F3F0">Kairune</text>
+  <text x="151" y="118" font-family="ui-monospace,Menlo,Consolas,monospace" font-size="14" letter-spacing="0.5" fill="#8A8C86">// trust layer for agents that spend</text>
+</svg>

@@ -1,0 +1,22 @@
+{
+  "name": "kairune",
+  "version": "1.0.0",
+  "description": "Kairune — the trust layer for agents that spend. Landing + live console + REST API on libSQL/Turso.",
+  "type": "commonjs",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js",
+    "dev": "NODE_ENV=development node server.js",
+    "seed": "node src/db/seed.js",
+    "seed:reset": "node src/db/seed.js --reset",
+    "test": "node --test"
+  },
+  "engines": {
+    "node": ">=18"
+  },
+  "dependencies": {
+    "@libsql/client": "^0.17.4",
+    "compression": "^1.8.1",
+    "express": "^4.22.2"
+  }
+}

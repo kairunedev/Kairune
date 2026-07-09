@@ -1,0 +1,12 @@
+node_modules/
+npm-debug.log*
+.env
+.env.*
+!.env.example
+
+# SQLite database (runtime data)
+data/
+*.db
+*.db-shm
+*.db-wal
+.vercel

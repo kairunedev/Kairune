@@ -1,0 +1,267 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<meta name="twitter:site" content="@usekairune" />
+<meta name="twitter:creator" content="@usekairune" />
+<title>Kairune — The trust layer for agents that spend</title>
+<link rel="icon" href="assets/img/logo-mark-solid.svg" type="image/svg+xml" />
+<link rel="stylesheet" href="assets/css/styles.css?v=2" />
+</head>
+<body>
+
+<div class="grain"></div>
+
+<nav id="nav">
+  <div class="wrap nav-row">
+    <div class="logo"><img src="assets/img/logo-mark.svg" width="26" height="26" alt="Kairune" />Kairune</div>
+    <div class="nav-links">
+      <a href="#problem">why_it_matters</a>
+      <a href="#how">how_it_works</a>
+      <a href="#features">trust_marks</a>
+      <a href="#why-now">why_now</a>
+    </div>
+    <a href="/app" class="btn btn-primary nav-cta">Launch console</a>
+  </div>
+</nav>
+
+<header class="hero">
+  <div class="wrap hero-grid">
+    <div>
+      <a href="#launch" class="rh-badge hero-anim d1" aria-label="Live on Robinhood">
+        <img src="assets/img/robinhood-feather-green.png" width="15" height="19" alt="" />
+        <span>Live on <b>Robinhood</b></span>
+        <i class="rh-dot"></i>
+      </a>
+      <span class="tag hero-anim d2">a trust protocol for the autonomous-agent economy</span>
+      <h1>
+        <span class="h1-line hero-anim d3">The trust layer for</span>
+        <span class="accent">agents that spend.</span>
+      </h1>
+      <p class="sub hero-anim d4">AI agents are getting wallets, cards, and subscriptions of their own. Kairune gives every agent a verifiable track record — so humans and other agents know exactly how much to trust it with.</p>
+      <div class="hero-actions hero-anim d5">
+        <a href="/app" class="btn btn-primary">Launch live console</a>
+        <a href="#how" class="btn btn-ghost">See how it works</a>
+      </div>
+      <button type="button" class="ca-pill hero-anim d6" id="caCopy" data-ca="0xc20f293b166eebdc88815a51c19e7b817134ed1f" title="0xc20f293b166eebdc88815a51c19e7b817134ed1f" aria-label="Copy the $KAIRUNE contract address">
+        <span class="ca-pill-badge"><img src="assets/img/robinhood-feather-green.png" width="12" height="15" alt="" />$KAIRUNE</span>
+        <code class="ca-pill-addr" id="caValue"><span class="ca-full">0xc20f293b166eebdc88815a51c19e7b817134ed1f</span><span class="ca-short">0xc20f…4ed1f</span></code>
+        <span class="ca-pill-copy" id="caCopyLabel">copy</span>
+      </button>
+      <p class="hero-foot hero-anim d7">interactive demo — real trust scores, no wallet needed</p>
+    </div>
+    <div class="graph-panel reveal">
+      <div class="graph-head">
+        <span>trust_graph.live</span>
+        <span class="live"><i></i>syncing</span>
+      </div>
+      <canvas id="graph"></canvas>
+    </div>
+  </div>
+
+  <div class="wrap">
+    <div class="ticker-shell reveal">
+      <div class="ticker-label"><i></i> live trust mark activity</div>
+      <div class="ticker-track" id="tickerTrack"></div>
+    </div>
+  </div>
+</header>
+
+<section id="problem">
+  <div class="wrap">
+    <div class="head-row">
+      <div>
+        <span class="tag">why it matters</span>
+        <h2 class="reveal">Agents can already pay. Nothing tells you if they should.</h2>
+      </div>
+      <span class="index reveal">01 — 03</span>
+    </div>
+    <p class="section-sub reveal">Give an agent an API key and a card number, and it can subscribe, invoice, tip, and hire other agents in seconds. Right now that permission is all-or-nothing, invisible, and impossible to verify from the outside.</p>
+    <div class="ledger">
+      <div class="ledger-row reveal">
+        <span class="ledger-idx">01</span>
+        <h3>No credit history</h3>
+        <p>An agent that has handled a thousand flawless payments looks identical, on paper, to one made five minutes ago.</p>
+      </div>
+      <div class="ledger-row reveal">
+        <span class="ledger-idx">02</span>
+        <h3>All-or-nothing access</h3>
+        <p>Most integrations hand agents a raw key with no scope, no ceiling, and no easy way to pull it back once granted.</p>
+      </div>
+      <div class="ledger-row reveal">
+        <span class="ledger-idx">03</span>
+        <h3>No shared accountability</h3>
+        <p>When an agent misbehaves, there's no portable record that follows it — the next platform starts from zero again.</p>
+      </div>
+    </div>
+  </div>
+</section>
+
+<section id="how">
+  <div class="wrap">
+    <span class="tag">how kairune works</span>
+    <h2 class="reveal">Four steps to a portable reputation</h2>
+    <p class="section-sub reveal">Kairune sits between agents and the money rails they use, quietly turning behavior into a verifiable, portable trust mark.</p>
+    <div class="steps">
+      <div class="step reveal">
+        <div class="step-num">01</div>
+        <h4>Register the agent</h4>
+        <p>Give any autonomous agent a Kairune identity tied to its wallet or API identity.</p>
+      </div>
+      <div class="step reveal">
+        <div class="step-num">02</div>
+        <h4>Build a track record</h4>
+        <p>Every completed task, payment, and interaction is attested on-chain, good and bad.</p>
+      </div>
+      <div class="step reveal">
+        <div class="step-num">03</div>
+        <h4>Earn a trust mark</h4>
+        <p>History compiles into a tiered, verifiable score anyone can check before transacting.</p>
+      </div>
+      <div class="step reveal">
+        <div class="step-num">04</div>
+        <h4>Grant scoped access</h4>
+        <p>Humans and agents issue spending limits by tier — revocable instantly, anytime.</p>
+      </div>
+    </div>
+  </div>
+</section>
+
+<section id="features">
+  <div class="wrap">
+    <span class="tag">trust marks</span>
+    <h2 class="reveal">Built for a world where agents hold the wallet</h2>
+    <p class="section-sub reveal">An open attestation standard, not a walled garden — designed to plug into any agent framework or payment rail.</p>
+    <div class="bento">
+      <div class="cell span2 reveal">
+        <span class="k">TM</span>
+        <h3>Verifiable trust marks</h3>
+        <p>Tiered, on-chain attestations built from real transaction and task history, not self-reported claims. Every mark can be independently checked by any wallet, agent, or platform in one call.</p>
+      </div>
+      <div class="cell reveal">
+        <span class="k">SC</span>
+        <h3>Scoped permissions</h3>
+        <p>Grant spending by category, ceiling, and duration — never a blank check.</p>
+      </div>
+      <div class="cell reveal">
+        <span class="k">AG</span>
+        <h3>Agent-to-agent graph</h3>
+        <p>Agents vouch for and hire each other, building a web of accountable relationships.</p>
+      </div>
+      <div class="cell reveal">
+        <span class="k">RV</span>
+        <h3>Instant revocation</h3>
+        <p>Pull a permission the moment something looks wrong, reflected everywhere at once.</p>
+      </div>
+      <div class="cell reveal">
+        <span class="k">HL</span>
+        <h3>Human-in-the-loop overrides</h3>
+        <p>Set thresholds where an agent must pause and ask before it spends another cent — and an open attestation standard that's free to read, cheap to write, and portable across any chain or framework.</p>
+      </div>
+    </div>
+  </div>
+</section>
+
+<section id="demo">
+  <div class="wrap demo-wrap">
+    <div class="demo-copy reveal">
+      <span class="tag">trust score, made visible</span>
+      <h2>One number, backed by a full history</h2>
+      <p class="section-sub" style="margin-bottom:0;">A Kairune trust score compresses an agent's entire operating history into something anyone can check before granting access.</p>
+      <ul class="demo-list">
+        <li><b>01</b> Built entirely from verifiable on-chain attestations</li>
+        <li><b>02</b> Recalculates continuously as new activity lands</li>
+        <li><b>03</b> Portable across every platform the agent touches</li>
+      </ul>
+    </div>
+    <div class="demo-card reveal">
+      <div class="demo-top">
+        <div>
+          <div class="agent-id">0x71a2…9f0c</div>
+          <p class="agent-name">Voyager-07</p>
+        </div>
+        <span class="tier-tag">TIER_3 · TRUSTED</span>
+      </div>
+      <div class="ring-wrap">
+        <div class="ring">
+          <svg width="126" height="126" viewBox="0 0 126 126">
+            <circle class="ring-bg" cx="63" cy="63" r="53" fill="none" stroke-width="10"/>
+            <circle class="ring-fg" id="ringFg" cx="63" cy="63" r="53" fill="none" stroke-width="10" stroke-dasharray="333.01" stroke-dashoffset="333.01"/>
+          </svg>
+          <div class="ring-label"><b id="ringNum">0</b><span>score</span></div>
+        </div>
+        <div class="demo-metrics">
+          <div class="metric-row"><span>tasks_completed</span><b>1,284</b></div>
+          <div class="metric-row"><span>clean_payments</span><b>99.6%</b></div>
+          <div class="metric-row"><span>peer_vouches</span><b>37</b></div>
+        </div>
+      </div>
+      <div style="margin-top:22px;">
+        <div class="metric-row"><span>spend_ceiling</span><b>$420/day</b></div>
+        <div class="bar"><i id="bar1"></i></div>
+      </div>
+      <div style="margin-top:14px;">
+        <div class="metric-row"><span>next_tier_eta</span><b>~12 days</b></div>
+        <div class="bar"><i id="bar2"></i></div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<section id="why-now">
+  <div class="wrap why-grid">
+    <div class="reveal">
+      <span class="tag">why now</span>
+      <h2>Hackathon ideas become infrastructure fastest</h2>
+      <p class="section-sub" style="margin-bottom:0;">The same builder pattern keeps repeating: a small team ships the missing primitive before the rest of the market notices it's missing. Agent commerce is moving faster than the trust tooling underneath it — that gap is the opportunity.</p>
+    </div>
+    <div class="quote-list reveal">
+      <div class="q">
+        <p>"Every agent framework is racing to give agents a wallet. Almost none of them are racing to tell you when that agent shouldn't be trusted with one."</p>
+        <span>founding_thesis / kairune</span>
+      </div>
+      <div class="q">
+        <p>"Reputation infrastructure always arrives after the thing it protects goes mainstream. This time, it doesn't have to."</p>
+        <span>founding_thesis / kairune</span>
+      </div>
+    </div>
+  </div>
+</section>
+
+<div class="marquee-band">
+  <div class="marquee-track" id="marqueeTrack"></div>
+</div>
+
+<section class="final-cta" id="launch">
+  <div class="wrap">
+    <span class="tag" style="display:flex;justify-content:center;">$KAIRUNE is live</span>
+    <h2 class="reveal">The trust layer for agents that spend.</h2>
+    <p class="reveal">Launched on Robinhood via Noxa_Fi. Grab the contract address from the top of the page, or explore the live trust console now.</p>
+    <div class="final-actions reveal">
+      <a href="/app" class="btn btn-primary">Launch live console</a>
+      <a href="https://x.com/usekairune" class="btn btn-ghost" target="_blank" rel="noopener noreferrer">Follow @usekairune</a>
+    </div>
+  </div>
+</section>
+
+<footer>
+  <div class="wrap">
+    <div class="foot-row">
+      <div class="logo" style="font-size:14px;"><img src="assets/img/logo-mark.svg" width="22" height="22" alt="Kairune" />Kairune</div>
+      <div class="foot-links">
+        <a href="https://x.com/usekairune" target="_blank" rel="noopener noreferrer">@usekairune</a>
+        <a href="#problem">why_it_matters</a>
+        <a href="#how">how_it_works</a>
+        <a href="#features">trust_marks</a>
+        <a href="#why-now">why_now</a>
+      </div>
+    </div>
+    <p class="foot-note">// kairune is a live trust layer for AI agents — not financial advice. $KAIRUNE is a community token on Robinhood chain via Noxa Fun. do your own research before interacting with any token or granting agent permissions.</p>
+  </div>
+</footer>
+
+<script src="assets/js/main.js?v=2" defer></script>
+
+</body>
+</html>

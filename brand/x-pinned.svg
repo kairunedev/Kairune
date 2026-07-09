@@ -1,0 +1,113 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1600 900" width="1600" height="900">
+  <defs>
+    <radialGradient id="bg" cx="26%" cy="30%" r="90%">
+      <stop offset="0%" stop-color="#15171A"/>
+      <stop offset="100%" stop-color="#0A0B0D"/>
+    </radialGradient>
+    <radialGradient id="spot" cx="80%" cy="72%" r="55%">
+      <stop offset="0%" stop-color="#D7FF3F" stop-opacity="0.10"/>
+      <stop offset="100%" stop-color="#D7FF3F" stop-opacity="0"/>
+    </radialGradient>
+    <linearGradient id="accent" x1="0" y1="0" x2="1" y2="0">
+      <stop offset="0%" stop-color="#D7FF3F"/>
+      <stop offset="100%" stop-color="#9BE000"/>
+    </linearGradient>
+  </defs>
+
+  <rect width="1600" height="900" fill="url(#bg)"/>
+  <rect width="1600" height="900" fill="url(#spot)"/>
+
+  <!-- subtle grid -->
+  <g stroke="#F3F3F0" stroke-opacity="0.04" stroke-width="1">
+    <line x1="0" y1="225" x2="1600" y2="225"/>
+    <line x1="0" y1="450" x2="1600" y2="450"/>
+    <line x1="0" y1="675" x2="1600" y2="675"/>
+    <line x1="400" y1="0" x2="400" y2="900"/>
+    <line x1="800" y1="0" x2="800" y2="900"/>
+    <line x1="1200" y1="0" x2="1200" y2="900"/>
+  </g>
+
+  <!-- right-side trust graph motif -->
+  <g stroke="#F3F3F0" stroke-opacity="0.13" stroke-width="1.5" fill="none">
+    <line x1="1140" y1="250" x2="1300" y2="330"/>
+    <line x1="1300" y1="330" x2="1440" y2="255"/>
+    <line x1="1300" y1="330" x2="1370" y2="500"/>
+    <line x1="1370" y1="500" x2="1500" y2="560"/>
+    <line x1="1440" y1="255" x2="1520" y2="400"/>
+    <line x1="1300" y1="330" x2="1190" y2="500"/>
+    <line x1="1190" y1="500" x2="1370" y2="500"/>
+    <line x1="1190" y1="500" x2="1250" y2="660"/>
+    <line x1="1370" y1="500" x2="1450" y2="660"/>
+  </g>
+  <g fill="#F3F3F0" fill-opacity="0.42">
+    <circle cx="1140" cy="250" r="5"/>
+    <circle cx="1440" cy="255" r="4.5"/>
+    <circle cx="1520" cy="400" r="5"/>
+    <circle cx="1190" cy="500" r="4.5"/>
+    <circle cx="1500" cy="560" r="5"/>
+    <circle cx="1250" cy="660" r="4.5"/>
+    <circle cx="1450" cy="660" r="4.5"/>
+  </g>
+  <g fill="#D7FF3F">
+    <circle cx="1300" cy="330" r="8"/>
+    <circle cx="1370" cy="500" r="7"/>
+  </g>
+
+  <!-- logo mark -->
+  <g transform="translate(120,110) scale(1.7)">
+    <polygon points="32,4 56.78,18 56.78,46 32,60 7.22,46 7.22,18" fill="#D7FF3F"/>
+    <g fill="none" stroke="#10130A" stroke-width="5.4" stroke-linecap="round" stroke-linejoin="round">
+      <line x1="24" y1="19" x2="24" y2="45"/>
+      <line x1="24" y1="32" x2="39" y2="19"/>
+      <line x1="24" y1="32" x2="39" y2="45"/>
+    </g>
+  </g>
+  <text x="235" y="167" font-family="-apple-system,BlinkMacSystemFont,Segoe UI,Roboto,Helvetica,Arial,sans-serif"
+        font-size="52" font-weight="700" fill="#F3F3F0" letter-spacing="-1">Kairune</text>
+
+  <!-- launching-on-robinhood pill -->
+  <g transform="translate(1140,120)">
+    <rect x="0" y="0" width="340" height="52" rx="26" fill="#00C805" fill-opacity="0.09" stroke="#00C805" stroke-opacity="0.36"/>
+    <image href="../assets/img/robinhood-feather-green.png" x="22" y="14" width="19" height="24" preserveAspectRatio="xMidYMid meet"/>
+    <text x="52" y="33" font-family="ui-monospace,SFMono-Regular,Menlo,Consolas,monospace"
+          font-size="18" fill="#F3F3F0">live on <tspan fill="#3CE85B" font-weight="600">Robinhood</tspan></text>
+    <circle cx="318" cy="26" r="4.5" fill="#00C805"/>
+  </g>
+
+  <!-- headline -->
+  <text x="120" y="360" font-family="-apple-system,BlinkMacSystemFont,Segoe UI,Roboto,Helvetica,Arial,sans-serif"
+        font-size="96" font-weight="800" fill="#F3F3F0" letter-spacing="-3">The trust layer for</text>
+  <text x="120" y="470" font-family="-apple-system,BlinkMacSystemFont,Segoe UI,Roboto,Helvetica,Arial,sans-serif"
+        font-size="96" font-weight="800" fill="url(#accent)" letter-spacing="-3">agents that spend.</text>
+
+  <!-- subline -->
+  <text x="122" y="545" font-family="-apple-system,BlinkMacSystemFont,Segoe UI,Roboto,Helvetica,Arial,sans-serif"
+        font-size="30" fill="rgba(243,243,240,0.62)">AI agents now hold wallets, cards &amp; subscriptions.</text>
+  <text x="122" y="588" font-family="-apple-system,BlinkMacSystemFont,Segoe UI,Roboto,Helvetica,Arial,sans-serif"
+        font-size="30" fill="rgba(243,243,240,0.62)">Kairune gives every agent a verifiable track record.</text>
+
+  <!-- feature chips -->
+  <g font-family="ui-monospace,SFMono-Regular,Menlo,Consolas,monospace" font-size="22">
+    <g transform="translate(120,650)">
+      <rect x="0" y="0" width="300" height="60" rx="14" fill="#F3F3F0" fill-opacity="0.04" stroke="#F3F3F0" stroke-opacity="0.12"/>
+      <circle cx="34" cy="30" r="6" fill="#D7FF3F"/>
+      <text x="58" y="38" fill="#F3F3F0">verifiable trust marks</text>
+    </g>
+    <g transform="translate(440,650)">
+      <rect x="0" y="0" width="285" height="60" rx="14" fill="#F3F3F0" fill-opacity="0.04" stroke="#F3F3F0" stroke-opacity="0.12"/>
+      <circle cx="34" cy="30" r="6" fill="#D7FF3F"/>
+      <text x="58" y="38" fill="#F3F3F0">scoped permissions</text>
+    </g>
+    <g transform="translate(745,650)">
+      <rect x="0" y="0" width="285" height="60" rx="14" fill="#F3F3F0" fill-opacity="0.04" stroke="#F3F3F0" stroke-opacity="0.12"/>
+      <circle cx="34" cy="30" r="6" fill="#D7FF3F"/>
+      <text x="58" y="38" fill="#F3F3F0">instant revocation</text>
+    </g>
+  </g>
+
+  <!-- footer url -->
+  <text x="120" y="810" font-family="ui-monospace,SFMono-Regular,Menlo,Consolas,monospace"
+        font-size="26" fill="#D7FF3F">kairune.online</text>
+  <text x="122" y="848" font-family="ui-monospace,SFMono-Regular,Menlo,Consolas,monospace"
+        font-size="19" fill="rgba(243,243,240,0.4)">// interactive demo &#8212; real trust scores, no wallet needed</text>
+</svg>
