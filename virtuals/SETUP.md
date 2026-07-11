@@ -100,16 +100,13 @@ Keep this process running (PM2 / systemd / Railway). Vercel serverless cannot li
 
 ## D. Cursor MCP (optional)
 
-Two MCP surfaces:
-
-1. **Kairune MCP** (local) — same tools as Jobs Offered, hits `kairune.online` directly (no escrow). Config in `.cursor/mcp.json`.
-2. **Virtuals MCP** — official `https://mcp.acp.virtuals.io/` for agent/card/email ops. Needs [Base MCP](https://mcp.base.org) SIWE login ([docs](https://docs.base.org/ai-agents/plugins/native/virtuals)).
+**Kairune MCP** (local) — same tools as Jobs Offered, hits `kairune.online` directly (no escrow):
 
 ```bash
-npm run mcp   # stdio server; Cursor starts this via mcp.json
+npm run mcp
 ```
 
-Reload Cursor → enable **kairune** / **virtuals** / **base-mcp** in Settings → MCP.
+Chain: **Robinhood Chain** via Virtuals ACP (`robinhood` in `provider.mjs`).
 
 ---
 
@@ -121,7 +118,7 @@ Reload Cursor → enable **kairune** / **virtuals** / **base-mcp** in Settings �
 | `import-jobs.json` | Virtuals UI Import (jobs only, snake_case) |
 | `import-resources.json` | Virtuals UI Import (resources only) |
 | `kairuneClient.cjs` | Maps job → Kairune REST API |
-| `provider.mjs` | ACP seller listener |
+| `provider.mjs` | ACP seller listener (Robinhood Chain) |
 | `mcp-server.mjs` | Cursor MCP tools mirroring ACP offerings |
 | `.env.example` | Secrets template |
 | `package.json` | Local deps for the bot |
@@ -132,4 +129,4 @@ Reload Cursor → enable **kairune** / **virtuals** / **base-mcp** in Settings �
 
 - Prices are **test-low** on purpose — raise after first successful jobs.
 - Product itself stays free at `kairune.online/app`; ACP fee is for mediated agent-commerce jobs.
-- Chain adapter in SDK examples uses Base; if your Virtuals agent is on Robinhood Chain, use the chain/adapter Virtuals documents for that network when available — set env accordingly.
+- Never commit `virtuals/.env` (signer key / wallet id).

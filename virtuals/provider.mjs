@@ -11,7 +11,6 @@
  *   ACP_WALLET_ID
  *   ACP_SIGNER_PRIVATE_KEY
  *   ACP_BUILDER_CODE          (optional, bc-...)
- *   ACP_CHAIN                 (base | robinhood — default base for SDK adapters)
  *   KAIRUNE_API_BASE          (default https://kairune.online/api)
  */
 
@@ -19,8 +18,8 @@ import {
   AcpAgent,
   PrivyAlchemyEvmProviderAdapter,
   AssetToken,
+  robinhood,
 } from '@virtuals-protocol/acp-node-v2';
-import { base } from '@account-kit/infra';
 import { createRequire } from 'module';
 
 const require = createRequire(import.meta.url);
@@ -48,13 +47,13 @@ function parseRequirement(content) {
 }
 
 async function main() {
-  const chain = base; // SDK ships Base; override if Virtuals gives a Robinhood adapter later
+  // Kairune agent is on Virtuals / Robinhood Chain — not Base.
   const seller = await AcpAgent.create({
     provider: await PrivyAlchemyEvmProviderAdapter.create({
       walletAddress: env('ACP_WALLET_ADDRESS'),
       walletId: env('ACP_WALLET_ID'),
       signerPrivateKey: env('ACP_SIGNER_PRIVATE_KEY'),
-      chains: [chain],
+      chains: [robinhood],
       builderCode: process.env.ACP_BUILDER_CODE || undefined,
     }),
   });

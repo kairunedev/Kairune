@@ -13,7 +13,6 @@
     "node": ">=18"
   },
   "dependencies": {
-    "@account-kit/infra": "^4.0.0",
     "@modelcontextprotocol/sdk": "^1.29.0",
     "@virtuals-protocol/acp-node-v2": "^0.1.7"
   }
