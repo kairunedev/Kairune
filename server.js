@@ -8,9 +8,13 @@
  */
 
 const path = require('path');
+const fs = require('fs');
 const express = require('express');
 const compression = require('compression');
 const apiRouter = require('./src/routes/api');
+const agentService = require('./src/services/agentService');
+const attestationService = require('./src/services/attestationService');
+const trustScore = require('./src/services/trustScore');
 
 // Configuration comes from the environment (no secret values are hard-coded).
 const PORT = parseInt(process.env.PORT, 10) || 3040;
@@ -77,6 +81,87 @@ app.use(
     },
   })
 );
+
+// API docs at /docs (must be explicit so Vercel file-tracing includes the folder).
+app.use(
+  '/docs',
+  express.static(path.join(PUBLIC_DIR, 'docs'), {
+    extensions: ['html'],
+    setHeaders(res, filePath) {
+      if (filePath.endsWith('.html')) {
+        res.setHeader('Cache-Control', 'no-cache');
+      }
+    },
+  })
+);
+
+// Public agent trust cards at /a/:handle (SSR meta for X/OG unfurls)
+app.get('/a/:handle', async (req, res, next) => {
+  if (req.params.handle.includes('.')) return next();
+  try {
+    let html = fs.readFileSync(path.join(PUBLIC_DIR, 'a', 'index.html'), 'utf8');
+    const handle = String(req.params.handle).trim().toLowerCase();
+    const base = await agentService.getAgent(handle);
+    let title = 'Kairune — agent trust card';
+    let desc = 'Verifiable trust score for AI agents that spend.';
+    if (base) {
+      const agent = await agentService.recalcAgent(base.id);
+      const atts = await attestationService.listAttestations(base.id, { limit: 50 });
+      const label = agent.label || trustScore.TIER_LABELS[agent.tier] || 'UNRATED';
+      title = `${agent.handle} · score ${agent.score} (${label}) — Kairune`;
+      desc = `Trust mark for ${agent.handle}: score ${agent.score}/1000, tier ${label}, suggested ceiling $${agent.suggested_daily_ceiling || 0}/day.`;
+      html = html
+        .replace(/<title>[^<]*<\/title>/, `<title>${escapeHtml(title)}</title>`)
+        .replace(
+          '<!--OG_META-->',
+          [
+            `<meta property="og:title" content="${escapeHtml(title)}" />`,
+            `<meta property="og:description" content="${escapeHtml(desc)}" />`,
+            `<meta property="og:url" content="https://kairune.online/a/${encodeURIComponent(agent.handle)}" />`,
+            `<meta property="og:type" content="website" />`,
+            `<meta property="og:image" content="https://kairune.online/assets/img/logo-mark-solid.png" />`,
+            `<meta name="twitter:card" content="summary" />`,
+            `<meta name="twitter:title" content="${escapeHtml(title)}" />`,
+            `<meta name="twitter:description" content="${escapeHtml(desc)}" />`,
+            `<meta name="description" content="${escapeHtml(desc)}" />`,
+          ].join('\n')
+        );
+      // seed client so card paints without flash
+      html = html.replace(
+        '<!--BOOT_JSON-->',
+        `<script>window.__KAIRUNE_SHARE__=${JSON.stringify({
+          agent,
+          attestations: atts,
+        }).replace(/</g, '\\u003c')};</script>`
+      );
+    } else {
+      html = html.replace('<!--OG_META-->', '');
+      html = html.replace('<!--BOOT_JSON-->', '');
+    }
+    res.setHeader('Cache-Control', 'no-cache');
+    res.type('html').send(html);
+  } catch (err) {
+    next(err);
+  }
+});
+app.use(
+  '/a',
+  express.static(path.join(PUBLIC_DIR, 'a'), {
+    setHeaders(res, filePath) {
+      if (filePath.endsWith('.html')) {
+        res.setHeader('Cache-Control', 'no-cache');
+      }
+    },
+  })
+);
+
+function escapeHtml(s) {
+  return String(s)
+    .replace(/&/g, '&amp;')
+    .replace(/"/g, '&quot;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;');
+}
 
 app.use(
   express.static(PUBLIC_DIR, {

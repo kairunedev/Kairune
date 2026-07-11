@@ -1,0 +1,120 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<meta name="virtual-protocol-site-verification" content="7dbccd717353dca1ea036ebce2f12374" />
+<meta name="twitter:card" content="summary_large_image" />
+<meta name="twitter:site" content="@usekairune" />
+<!--OG_META-->
+<title>Kairune — agent trust card</title>
+<link rel="icon" href="/assets/img/logo-mark-solid.svg" type="image/svg+xml" />
+<link rel="stylesheet" href="/assets/css/styles.css?v=6" />
+<link rel="stylesheet" href="/a/share.css?v=2" />
+</head>
+<body class="share">
+
+<!--BOOT_JSON-->
+<div class="grain"></div>
+
+<nav id="nav" class="scrolled">
+  <div class="wrap nav-row">
+    <a class="logo" href="/"><img src="/assets/img/logo-mark.svg" width="26" height="26" alt="Kairune" />Kairune</a>
+    <div class="nav-links">
+      <a href="/app">console</a>
+      <a href="/docs">api_docs</a>
+      <a href="https://app.virtuals.io/virtuals/100623" target="_blank" rel="noopener noreferrer">virtuals</a>
+    </div>
+  </div>
+</nav>
+
+<main class="wrap share-main">
+  <p class="share-status" id="status">loading trust card…</p>
+  <article class="trust-card" id="card" hidden>
+    <div class="trust-card-top">
+      <img src="/assets/img/logo-mark-solid.svg" width="36" height="36" alt="" />
+      <div>
+        <p class="trust-k">kairune trust mark</p>
+        <h1 id="handle">—</h1>
+      </div>
+      <span class="tierpill" id="tier">—</span>
+    </div>
+    <div class="trust-score-row">
+      <div>
+        <b id="score">—</b>
+        <span>score / 1000</span>
+      </div>
+      <div>
+        <b id="ceiling">—</b>
+        <span>suggested ceiling</span>
+      </div>
+      <div>
+        <b id="atts">—</b>
+        <span>attestations</span>
+      </div>
+    </div>
+    <p class="trust-wallet" id="wallet">—</p>
+    <div class="trust-actions">
+      <button type="button" class="btn btn-primary btn-sm" id="copyLink">copy share link</button>
+      <a class="btn btn-ghost btn-sm" id="openConsole" href="/app">open in console</a>
+    </div>
+  </article>
+</main>
+
+<script>
+(function () {
+  const parts = location.pathname.replace(/\/+$/, '').split('/');
+  const handle = decodeURIComponent(parts[parts.length - 1] || '').toLowerCase();
+  const status = document.getElementById('status');
+  const card = document.getElementById('card');
+  if (!handle || handle === 'a' || handle === 'index.html') {
+    status.textContent = 'Missing agent handle. Example: /a/voyager-07';
+    return;
+  }
+
+  function paint(d) {
+    const a = d.agent;
+    if (!a) {
+      status.textContent = 'Agent not found';
+      return;
+    }
+    status.hidden = true;
+    card.hidden = false;
+    document.title = a.handle + ' — Kairune trust card';
+    document.getElementById('handle').textContent = a.handle;
+    document.getElementById('score').textContent = a.score;
+    document.getElementById('tier').textContent = (a.label || ('T' + a.tier));
+    document.getElementById('tier').className = 'tierpill tier-' + a.tier;
+    document.getElementById('ceiling').textContent = '$' + (a.suggested_daily_ceiling || 0) + '/day';
+    document.getElementById('atts').textContent = (d.attestations || []).length;
+    document.getElementById('wallet').textContent = a.wallet;
+    document.getElementById('openConsole').href = '/app/?agent=' + encodeURIComponent(a.handle);
+    const shareUrl = location.origin + '/a/' + encodeURIComponent(a.handle);
+    document.getElementById('copyLink').addEventListener('click', async () => {
+      try {
+        await navigator.clipboard.writeText(shareUrl);
+        document.getElementById('copyLink').textContent = 'copied';
+        setTimeout(() => { document.getElementById('copyLink').textContent = 'copy share link'; }, 1600);
+      } catch (_) {}
+    });
+  }
+
+  if (window.__KAIRUNE_SHARE__ && window.__KAIRUNE_SHARE__.agent) {
+    paint(window.__KAIRUNE_SHARE__);
+    return;
+  }
+
+  fetch('/api/agents/' + encodeURIComponent(handle))
+    .then((r) => r.json().then((d) => ({ ok: r.ok, d })))
+    .then(({ ok, d }) => {
+      if (!ok || !d.agent) {
+        status.textContent = (d && d.error) || 'Agent not found';
+        return;
+      }
+      paint(d);
+    })
+    .catch(() => { status.textContent = 'Failed to load agent'; });
+})();
+</script>
+</body>
+</html>

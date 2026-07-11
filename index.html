@@ -3,11 +3,12 @@
 <head>
 <meta charset="UTF-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1" />
+<meta name="virtual-protocol-site-verification" content="7dbccd717353dca1ea036ebce2f12374" />
 <meta name="twitter:site" content="@usekairune" />
 <meta name="twitter:creator" content="@usekairune" />
 <title>Kairune — The trust layer for agents that spend</title>
 <link rel="icon" href="assets/img/logo-mark-solid.svg" type="image/svg+xml" />
-<link rel="stylesheet" href="assets/css/styles.css?v=2" />
+<link rel="stylesheet" href="assets/css/styles.css?v=6" />
 </head>
 <body>
 
@@ -19,8 +20,8 @@
     <div class="nav-links">
       <a href="#problem">why_it_matters</a>
       <a href="#how">how_it_works</a>
-      <a href="#features">trust_marks</a>
-      <a href="#why-now">why_now</a>
+      <a href="/docs">api_docs</a>
+      <a href="/app">console</a>
     </div>
     <a href="/app" class="btn btn-primary nav-cta">Launch console</a>
   </div>
@@ -29,10 +30,13 @@
 <header class="hero">
   <div class="wrap hero-grid">
     <div>
-      <a href="#launch" class="rh-badge hero-anim d1" aria-label="Live on Robinhood">
-        <img src="assets/img/robinhood-feather-green.png" width="15" height="19" alt="" />
-        <span>Live on <b>Robinhood</b></span>
-        <i class="rh-dot"></i>
+      <a href="https://app.virtuals.io/virtuals/100623" class="vp-badge hero-anim d1" target="_blank" rel="noopener noreferrer" aria-label="Live on Virtuals — Robinhood Chain">
+        <img src="assets/img/virtuals-mark-cyan.svg" width="16" height="16" alt="" />
+        <span>Live on <b>Virtuals</b></span>
+        <span class="vp-sep">·</span>
+        <img src="assets/img/robinhood-feather-green.png" width="12" height="15" alt="" class="vp-rh" />
+        <span>Robinhood Chain</span>
+        <i class="vp-dot"></i>
       </a>
       <span class="tag hero-anim d2">a trust protocol for the autonomous-agent economy</span>
       <h1>
@@ -41,12 +45,12 @@
       </h1>
       <p class="sub hero-anim d4">AI agents are getting wallets, cards, and subscriptions of their own. Kairune gives every agent a verifiable track record — so humans and other agents know exactly how much to trust it with.</p>
       <div class="hero-actions hero-anim d5">
-        <a href="/app" class="btn btn-primary">Launch live console</a>
-        <a href="#how" class="btn btn-ghost">See how it works</a>
+        <a href="/app" class="btn btn-primary">Launch console</a>
+        <a href="/app/?demo=1" class="btn btn-ghost">Try demo loop</a>
       </div>
-      <button type="button" class="ca-pill hero-anim d6" id="caCopy" data-ca="0xc20f293b166eebdc88815a51c19e7b817134ed1f" title="0xc20f293b166eebdc88815a51c19e7b817134ed1f" aria-label="Copy the $KAIRUNE contract address">
-        <span class="ca-pill-badge"><img src="assets/img/robinhood-feather-green.png" width="12" height="15" alt="" />$KAIRUNE</span>
-        <code class="ca-pill-addr" id="caValue"><span class="ca-full">0xc20f293b166eebdc88815a51c19e7b817134ed1f</span><span class="ca-short">0xc20f…4ed1f</span></code>
+      <button type="button" class="ca-pill hero-anim d6" id="caCopy" data-ca="0xc5ac3b7664ba1ac915145cc58f50b89ec3a2970d" title="0xc5ac3b7664ba1ac915145cc58f50b89ec3a2970d" aria-label="Copy the $KAIRUNE contract address">
+        <span class="ca-pill-badge"><img src="assets/img/virtuals-mark-cyan.svg" width="14" height="14" alt="" />$KAIRUNE</span>
+        <code class="ca-pill-addr" id="caValue"><span class="ca-full">0xc5ac3b7664ba1ac915145cc58f50b89ec3a2970d</span><span class="ca-short">0xc5ac…970d</span></code>
         <span class="ca-pill-copy" id="caCopyLabel">copy</span>
       </button>
       <p class="hero-foot hero-anim d7">interactive demo — real trust scores, no wallet needed</p>
@@ -64,6 +68,24 @@
     <div class="ticker-shell reveal">
       <div class="ticker-label"><i></i> live trust mark activity</div>
       <div class="ticker-track" id="tickerTrack"></div>
+    </div>
+    <div class="live-stats reveal" id="liveStats" aria-live="polite">
+      <a class="live-stat" href="/app">
+        <b id="lsAgents">—</b>
+        <span>agents registered</span>
+      </a>
+      <a class="live-stat" href="/app">
+        <b id="lsAtt">—</b>
+        <span>attestations</span>
+      </a>
+      <a class="live-stat" href="/app">
+        <b id="lsPerms">—</b>
+        <span>active permissions</span>
+      </a>
+      <a class="live-stat" href="/app">
+        <b id="lsAvg">—</b>
+        <span>avg trust score</span>
+      </a>
     </div>
   </div>
 </header>
@@ -229,18 +251,38 @@
   </div>
 </section>
 
+<section id="builders">
+  <div class="wrap">
+    <span class="tag">for builders</span>
+    <h2 class="reveal">Wire trust into your agent in 4 calls</h2>
+    <p class="section-sub reveal">Free REST API — no wallet, no SDK. Register → attest → score → grant scoped spend. Share any agent as a public trust card.</p>
+    <pre class="builder-pre reveal">curl -X POST https://kairune.online/api/agents \
+  -H 'Content-Type: application/json' \
+  -d '{"handle":"my-agent","wallet":"0xYOUR_ID"}'
+
+# then POST /api/agents/:id/attestations  {"kind":"task_completed"}
+# share card → https://kairune.online/a/my-agent</pre>
+    <div class="final-actions reveal" style="justify-content:flex-start;margin-top:22px;">
+      <a href="/docs" class="btn btn-primary">Read API docs</a>
+      <a href="/app/?demo=1" class="btn btn-ghost">Run demo loop</a>
+      <a href="/a/voyager-07" class="btn btn-ghost">Example trust card</a>
+    </div>
+  </div>
+</section>
+
 <div class="marquee-band">
   <div class="marquee-track" id="marqueeTrack"></div>
 </div>
 
 <section class="final-cta" id="launch">
   <div class="wrap">
-    <span class="tag" style="display:flex;justify-content:center;">$KAIRUNE is live</span>
+    <span class="tag" style="display:flex;justify-content:center;">$KAIRUNE on Virtuals · Robinhood Chain</span>
     <h2 class="reveal">The trust layer for agents that spend.</h2>
-    <p class="reveal">Launched on Robinhood via Noxa_Fi. Grab the contract address from the top of the page, or explore the live trust console now.</p>
+    <p class="reveal">Trade on Virtuals (Robinhood Chain), then open the free console — register agents, build trust scores, grant scoped spend. No wallet needed.</p>
     <div class="final-actions reveal">
-      <a href="/app" class="btn btn-primary">Launch live console</a>
-      <a href="https://x.com/usekairune" class="btn btn-ghost" target="_blank" rel="noopener noreferrer">Follow @usekairune</a>
+      <a href="/app" class="btn btn-primary">Launch console</a>
+      <a href="https://app.virtuals.io/virtuals/100623" class="btn btn-ghost" target="_blank" rel="noopener noreferrer">Trade on Virtuals</a>
+      <a href="https://x.com/usekairune" class="btn btn-ghost" target="_blank" rel="noopener noreferrer">@usekairune</a>
     </div>
   </div>
 </section>
@@ -250,18 +292,18 @@
     <div class="foot-row">
       <div class="logo" style="font-size:14px;"><img src="assets/img/logo-mark.svg" width="22" height="22" alt="Kairune" />Kairune</div>
       <div class="foot-links">
+        <a href="https://app.virtuals.io/virtuals/100623" target="_blank" rel="noopener noreferrer">virtuals</a>
         <a href="https://x.com/usekairune" target="_blank" rel="noopener noreferrer">@usekairune</a>
+        <a href="/app">console</a>
+        <a href="/docs">api_docs</a>
         <a href="#problem">why_it_matters</a>
-        <a href="#how">how_it_works</a>
-        <a href="#features">trust_marks</a>
-        <a href="#why-now">why_now</a>
       </div>
     </div>
-    <p class="foot-note">// kairune is a live trust layer for AI agents — not financial advice. $KAIRUNE is a community token on Robinhood chain via Noxa Fun. do your own research before interacting with any token or granting agent permissions.</p>
+    <p class="foot-note">// kairune is a live trust layer for AI agents — not financial advice. $KAIRUNE is a community token on Virtuals (Robinhood Chain). do your own research before interacting with any token or granting agent permissions.</p>
   </div>
 </footer>
 
-<script src="assets/js/main.js?v=2" defer></script>
+<script src="assets/js/main.js?v=6" defer></script>
 
 </body>
 </html>

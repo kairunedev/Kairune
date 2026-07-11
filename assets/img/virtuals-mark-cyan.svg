@@ -1,0 +1,8 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 100" width="100" height="100">
+  <!-- Virtuals-style faceted geometric mark -->
+  <g fill="#22D3EE">
+    <path d="M50 6 L94 31 L94 42 L50 17 L6 42 L6 31 Z"/>
+    <path d="M50 30 L94 55 L72 68 L50 55 L28 68 L6 55 Z"/>
+    <path d="M50 66 L72 79 L50 92 L28 79 Z"/>
+  </g>
+</svg>

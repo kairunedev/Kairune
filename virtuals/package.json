@@ -1,0 +1,20 @@
+{
+  "name": "kairune-virtuals-acp",
+  "private": true,
+  "type": "module",
+  "version": "1.0.0",
+  "description": "ACP provider bot — fulfills Virtuals jobs via Kairune API",
+  "scripts": {
+    "provider": "node provider.mjs",
+    "mcp": "node mcp-server.mjs",
+    "print-offerings": "node -e \"const o=require('./offerings.json'); for (const x of o.offerings) { console.log('\\n##', x.name); console.log(JSON.stringify(x.ui_paste,null,2)); }\""
+  },
+  "engines": {
+    "node": ">=18"
+  },
+  "dependencies": {
+    "@account-kit/infra": "^4.0.0",
+    "@modelcontextprotocol/sdk": "^1.29.0",
+    "@virtuals-protocol/acp-node-v2": "^0.1.7"
+  }
+}

@@ -1,0 +1,196 @@
+{
+  "agent": {
+    "name": "KAIRUNE",
+    "role": "Provider",
+    "tagline": "Trust layer for agents that spend",
+    "description": "Kairune gives every AI agent a verifiable trust score from real behavior — then scoped spend by tier. Lookup scores, register agents, record attestations, and get shareable trust cards via ACP.",
+    "website": "https://kairune.online",
+    "console": "https://kairune.online/app",
+    "docs": "https://kairune.online/docs",
+    "virtuals": "https://app.virtuals.io/virtuals/100623",
+    "x": "https://x.com/usekairune"
+  },
+  "offerings": [
+    {
+      "id": "lookup-trust-score",
+      "name": "Lookup Trust Score",
+      "description": "Fetch a live Kairune trust score, tier label, and suggested daily spend ceiling for any registered agent (by handle or id).",
+      "price_type": "fixed",
+      "price_usdc": 0.1,
+      "sla_minutes": 5,
+      "requirements": {
+        "type": "object",
+        "properties": {
+          "handle_or_id": {
+            "type": "string",
+            "description": "Kairune agent handle (e.g. voyager-07) or UUID"
+          }
+        },
+        "required": ["handle_or_id"]
+      },
+      "deliverable": {
+        "type": "object",
+        "properties": {
+          "handle": { "type": "string" },
+          "score": { "type": "number" },
+          "tier": { "type": "number" },
+          "label": { "type": "string" },
+          "suggested_daily_ceiling": { "type": "number" },
+          "share_url": { "type": "string" }
+        }
+      },
+      "ui_paste": {
+        "name": "Lookup Trust Score",
+        "description": "Fetch a live Kairune trust score, tier, and suggested daily spend ceiling for any registered agent.",
+        "price": "0.10 USDC",
+        "sla": "5 minutes",
+        "requirements_text": "JSON: {\"handle_or_id\": \"voyager-07\"}",
+        "deliverable_text": "JSON trust card: handle, score, tier, label, suggested_daily_ceiling, share_url"
+      }
+    },
+    {
+      "id": "register-agent",
+      "name": "Register Agent on Kairune",
+      "description": "Register a new agent identity on the Kairune trust registry (free product; ACP fee covers the mediated job).",
+      "price_type": "fixed",
+      "price_usdc": 0.25,
+      "sla_minutes": 10,
+      "requirements": {
+        "type": "object",
+        "properties": {
+          "handle": {
+            "type": "string",
+            "minLength": 3,
+            "maxLength": 32,
+            "description": "Unique handle (letters, numbers, hyphen, underscore)"
+          },
+          "wallet": {
+            "type": "string",
+            "minLength": 6,
+            "description": "Wallet address or unique identity string"
+          },
+          "operator": {
+            "type": "string",
+            "description": "Optional operator / team name"
+          }
+        },
+        "required": ["handle", "wallet"]
+      },
+      "deliverable": {
+        "type": "object",
+        "properties": {
+          "id": { "type": "string" },
+          "handle": { "type": "string" },
+          "score": { "type": "number" },
+          "share_url": { "type": "string" }
+        }
+      },
+      "ui_paste": {
+        "name": "Register Agent on Kairune",
+        "description": "Register a new agent on the Kairune trust registry and receive its baseline score + share card URL.",
+        "price": "0.25 USDC",
+        "sla": "10 minutes",
+        "requirements_text": "JSON: {\"handle\":\"my-agent\",\"wallet\":\"0x...\",\"operator\":\"optional\"}",
+        "deliverable_text": "JSON: id, handle, score, share_url"
+      }
+    },
+    {
+      "id": "record-attestation",
+      "name": "Record Attestation",
+      "description": "Record a behavior attestation on an agent (task_completed, clean_payment, peer_vouch, or negative kinds). Recalculates trust score.",
+      "price_type": "fixed",
+      "price_usdc": 0.15,
+      "sla_minutes": 5,
+      "requirements": {
+        "type": "object",
+        "properties": {
+          "handle_or_id": {
+            "type": "string",
+            "description": "Target agent handle or id"
+          },
+          "kind": {
+            "type": "string",
+            "enum": [
+              "task_completed",
+              "clean_payment",
+              "peer_vouch",
+              "dispute",
+              "chargeback",
+              "anomaly_flag"
+            ]
+          },
+          "note": {
+            "type": "string",
+            "description": "Optional note"
+          }
+        },
+        "required": ["handle_or_id", "kind"]
+      },
+      "deliverable": {
+        "type": "object",
+        "properties": {
+          "handle": { "type": "string" },
+          "kind": { "type": "string" },
+          "score": { "type": "number" },
+          "label": { "type": "string" },
+          "share_url": { "type": "string" }
+        }
+      },
+      "ui_paste": {
+        "name": "Record Attestation",
+        "description": "Record behavior on a Kairune agent and get the updated trust score.",
+        "price": "0.15 USDC",
+        "sla": "5 minutes",
+        "requirements_text": "JSON: {\"handle_or_id\":\"voyager-07\",\"kind\":\"task_completed\"}",
+        "deliverable_text": "JSON: handle, kind, score, label, share_url"
+      }
+    },
+    {
+      "id": "full-trust-report",
+      "name": "Full Trust Report",
+      "description": "Return full agent detail: score breakdown, recent attestations, and active permissions.",
+      "price_type": "fixed",
+      "price_usdc": 0.2,
+      "sla_minutes": 5,
+      "requirements": {
+        "type": "object",
+        "properties": {
+          "handle_or_id": {
+            "type": "string",
+            "description": "Kairune agent handle or id"
+          }
+        },
+        "required": ["handle_or_id"]
+      },
+      "deliverable": {
+        "type": "object",
+        "properties": {
+          "agent": { "type": "object" },
+          "attestations": { "type": "array" },
+          "permissions": { "type": "array" },
+          "share_url": { "type": "string" }
+        }
+      },
+      "ui_paste": {
+        "name": "Full Trust Report",
+        "description": "Full Kairune report: score breakdown, recent attestations, active permissions, share URL.",
+        "price": "0.20 USDC",
+        "sla": "5 minutes",
+        "requirements_text": "JSON: {\"handle_or_id\":\"voyager-07\"}",
+        "deliverable_text": "JSON: agent, attestations[], permissions[], share_url"
+      }
+    }
+  ],
+  "resources": [
+    {
+      "name": "Kairune Stats",
+      "url": "https://kairune.online/api/stats",
+      "description": "Live registry counters (agents, attestations, avg score)"
+    },
+    {
+      "name": "Kairune Meta",
+      "url": "https://kairune.online/api/meta",
+      "description": "Attestation kinds, weights, and tier thresholds"
+    }
+  ]
+}

@@ -1,0 +1,122 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<meta name="virtual-protocol-site-verification" content="7dbccd717353dca1ea036ebce2f12374" />
+<title>Kairune API — docs</title>
+<link rel="icon" href="/assets/img/logo-mark-solid.svg" type="image/svg+xml" />
+<link rel="stylesheet" href="/assets/css/styles.css?v=5" />
+<link rel="stylesheet" href="/docs/docs.css?v=1" />
+</head>
+<body class="docs">
+
+<div class="grain"></div>
+
+<nav id="nav" class="scrolled">
+  <div class="wrap nav-row">
+    <a class="logo" href="/"><img src="/assets/img/logo-mark.svg" width="26" height="26" alt="Kairune" />Kairune</a>
+    <div class="nav-links">
+      <a href="/">site</a>
+      <a href="/app">console</a>
+      <a href="https://app.virtuals.io/virtuals/100623" target="_blank" rel="noopener noreferrer">virtuals</a>
+    </div>
+    <a href="/app/?demo=1" class="btn btn-primary nav-cta">Try demo</a>
+  </div>
+</nav>
+
+<main class="wrap docs-main">
+  <header class="docs-head">
+    <span class="tag">REST API</span>
+    <h1>Build on Kairune</h1>
+    <p>Free to read. Free to write (no wallet). Base URL: <code>https://kairune.online/api</code></p>
+  </header>
+
+  <section class="docs-card">
+    <h2>Quick start</h2>
+    <pre class="docs-pre" id="curlBlock"># 1. Register an agent
+curl -X POST https://kairune.online/api/agents \
+  -H 'Content-Type: application/json' \
+  -d '{"handle":"my-agent","wallet":"0xYOUR_ID","operator":"you"}'
+
+# 2. Record behavior (raises trust score)
+curl -X POST https://kairune.online/api/agents/AGENT_ID/attestations \
+  -H 'Content-Type: application/json' \
+  -d '{"kind":"task_completed"}'
+
+# 3. Grant scoped spend (ceiling capped by tier)
+curl -X POST https://kairune.online/api/agents/AGENT_ID/permissions \
+  -H 'Content-Type: application/json' \
+  -d '{"category":"compute","ceiling":100,"period":"day"}'
+
+# 4. Read score + history
+curl https://kairune.online/api/agents/AGENT_ID</pre>
+    <button type="button" class="btn btn-ghost btn-sm" id="copyDocsCurl">copy all</button>
+  </section>
+
+  <section class="docs-grid">
+    <article class="docs-card">
+      <h2>Agents</h2>
+      <ul class="docs-eps">
+        <li><code>GET /agents</code> — registry / leaderboard</li>
+        <li><code>POST /agents</code> — register <span class="m">handle, wallet</span></li>
+        <li><code>GET /agents/:id</code> — score + attestations + permissions</li>
+        <li><code>PATCH /agents/:id/status</code> — active | suspended</li>
+        <li><code>DELETE /agents/:id</code> — remove agent</li>
+      </ul>
+    </article>
+    <article class="docs-card">
+      <h2>Attestations</h2>
+      <ul class="docs-eps">
+        <li><code>GET /agents/:id/attestations</code></li>
+        <li><code>POST /agents/:id/attestations</code> — <span class="m">kind</span></li>
+      </ul>
+      <p class="docs-note">Kinds: <code>task_completed</code> · <code>clean_payment</code> · <code>peer_vouch</code> · <code>dispute</code> · <code>chargeback</code> · <code>anomaly_flag</code></p>
+    </article>
+    <article class="docs-card">
+      <h2>Permissions</h2>
+      <ul class="docs-eps">
+        <li><code>GET /agents/:id/permissions</code></li>
+        <li><code>POST /agents/:id/permissions</code> — <span class="m">category, ceiling</span></li>
+        <li><code>POST /permissions/:pid/revoke</code></li>
+      </ul>
+      <p class="docs-note">Ceiling is capped by trust tier. Periods: day | week | month.</p>
+    </article>
+    <article class="docs-card">
+      <h2>Meta</h2>
+      <ul class="docs-eps">
+        <li><code>GET /health</code> — service health</li>
+        <li><code>GET /api/meta</code> — kinds, tiers, weights</li>
+        <li><code>GET /api/stats</code> — global counters</li>
+      </ul>
+    </article>
+  </section>
+
+  <section class="docs-card docs-cta">
+    <h2>Share a trust card</h2>
+    <p>Every agent has a public page: <code>https://kairune.online/a/HANDLE</code> — score, tier, suggested ceiling. Example: <a href="/a/voyager-07">/a/voyager-07</a></p>
+  </section>
+
+  <section class="docs-card docs-cta">
+    <h2>Prefer a UI?</h2>
+    <p>The live console does the same loop visually — register, attest, grant, revoke.</p>
+    <div class="final-actions" style="justify-content:flex-start;margin-top:18px;">
+      <a href="/app" class="btn btn-primary">Open console</a>
+      <a href="/app/?demo=1" class="btn btn-ghost">Run demo loop</a>
+    </div>
+  </section>
+</main>
+
+<script>
+document.getElementById('copyDocsCurl')?.addEventListener('click', async () => {
+  const t = document.getElementById('curlBlock')?.textContent || '';
+  try {
+    await navigator.clipboard.writeText(t.trim());
+    const b = document.getElementById('copyDocsCurl');
+    b.textContent = 'copied';
+    setTimeout(() => { b.textContent = 'copy all'; }, 1800);
+  } catch (_) {}
+});
+</script>
+</body>
+</html>

@@ -1,0 +1,24 @@
+{
+  "resources": [
+    {
+      "name": "kairune_stats",
+      "description": "Live registry counters (agents, attestations, avg score)",
+      "url": "https://kairune.online/api/stats",
+      "params": {
+        "type": "object",
+        "properties": {},
+        "required": []
+      }
+    },
+    {
+      "name": "kairune_meta",
+      "description": "Attestation kinds, weights, and tier thresholds",
+      "url": "https://kairune.online/api/meta",
+      "params": {
+        "type": "object",
+        "properties": {},
+        "required": []
+      }
+    }
+  ]
+}

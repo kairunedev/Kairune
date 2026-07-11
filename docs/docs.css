@@ -1,0 +1,35 @@
+/* API docs page — inherits site tokens from styles.css */
+body.docs { padding-top: 0; }
+.docs-main { padding: 100px 0 80px; max-width: 920px; }
+.docs-head { margin-bottom: 36px; }
+.docs-head h1 { margin: 8px 0 12px; font-size: clamp(28px, 4vw, 42px); letter-spacing: -.02em; }
+.docs-head p { color: var(--text-2); font-size: 15px; max-width: 560px; line-height: 1.55; margin: 0; }
+.docs-head code { color: var(--signal); font-family: var(--mono); font-size: 13px; }
+
+.docs-card {
+  border: 1px solid var(--line); border-radius: var(--radius-lg); background: var(--panel);
+  padding: 22px 24px; margin-bottom: 18px;
+}
+.docs-card h2 { margin: 0 0 14px; font-size: 15px; font-family: var(--mono); color: var(--text-2); font-weight: 600; }
+.docs-pre {
+  margin: 0 0 14px; padding: 16px 18px; border-radius: var(--radius); background: var(--ink);
+  border: 1px solid var(--line); font-family: var(--mono); font-size: 12px; line-height: 1.55;
+  color: var(--text-2); overflow-x: auto; white-space: pre;
+}
+.docs-grid {
+  display: grid; grid-template-columns: 1fr 1fr; gap: 16px; margin-bottom: 8px;
+}
+@media (max-width: 720px) { .docs-grid { grid-template-columns: 1fr; } }
+
+.docs-eps { list-style: none; padding: 0; margin: 0; }
+.docs-eps li {
+  padding: 9px 0; border-bottom: 1px solid var(--line); font-size: 13.5px; color: var(--text-2);
+  line-height: 1.45;
+}
+.docs-eps li:last-child { border-bottom: none; }
+.docs-eps code { font-family: var(--mono); font-size: 12.5px; color: var(--signal); }
+.docs-eps .m { font-family: var(--mono); font-size: 11.5px; color: var(--text-3); }
+.docs-note { margin: 12px 0 0; font-size: 12.5px; color: var(--text-3); line-height: 1.5; }
+.docs-note code { font-family: var(--mono); font-size: 11.5px; color: var(--text-2); }
+.docs-cta p { margin: 0; color: var(--text-2); font-size: 14.5px; }
+.btn-sm { padding: 7px 13px; min-height: 34px; font-size: 12.5px; }

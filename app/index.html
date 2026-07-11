@@ -3,10 +3,11 @@
 <head>
 <meta charset="UTF-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1" />
+<meta name="virtual-protocol-site-verification" content="7dbccd717353dca1ea036ebce2f12374" />
 <title>Kairune Console — live trust dashboard</title>
 <link rel="icon" href="/assets/img/logo-mark-solid.svg" type="image/svg+xml" />
-<link rel="stylesheet" href="/assets/css/styles.css?v=2" />
-<link rel="stylesheet" href="./console.css?v=2" />
+<link rel="stylesheet" href="/assets/css/styles.css?v=6" />
+<link rel="stylesheet" href="./console.css?v=6" />
 </head>
 <body class="console">
 
@@ -17,10 +18,15 @@
     <a class="logo" href="/"><img src="/assets/img/logo-mark.svg" width="26" height="26" alt="Kairune" />Kairune</a>
     <div class="nav-links">
       <a href="/">← back_to_site</a>
+      <a href="/docs">api_docs</a>
+      <a href="https://app.virtuals.io/virtuals/100623" target="_blank" rel="noopener noreferrer">virtuals</a>
       <a href="https://x.com/usekairune" target="_blank" rel="noopener noreferrer">@usekairune</a>
       <span class="conn" id="conn"><i></i> connecting…</span>
     </div>
-    <button class="btn btn-primary nav-cta" id="openCreate">+ Register agent</button>
+    <div class="nav-cta-row">
+      <button class="btn btn-ghost btn-sm" id="runDemo" type="button" title="Register + attest + grant in one click">▶ Demo loop</button>
+      <button class="btn btn-primary nav-cta" id="openCreate">+ Register agent</button>
+    </div>
   </div>
 </nav>
 
@@ -30,6 +36,7 @@
     <div>
       <span class="tag">live console</span>
       <h1 class="console-title">Trust graph, live.</h1>
+      <p class="console-sub">Register an agent, record behavior, watch the score move, grant scoped spend. Free — no wallet.</p>
     </div>
   </header>
 
@@ -41,12 +48,40 @@
     <div class="stat"><span class="stat-k">avg_score</span><b id="stAvg">—</b></div>
   </section>
 
+  <section class="holder-strip panel" aria-label="Holder wallet">
+    <div class="holder-row">
+      <div>
+        <h2>Soft $KAIRUNE utility</h2>
+        <p id="holderNote">Reads free. Optional holder wallet unlocks a higher write rate limit (allowlist — no chain RPC).</p>
+      </div>
+      <label class="holder-input">
+        wallet
+        <input type="text" id="holderWallet" placeholder="0x… (optional)" autocomplete="off" spellcheck="false" />
+      </label>
+      <span class="holder-badge" id="holderBadge">guest</span>
+    </div>
+  </section>
+
+  <section class="api-strip panel" aria-label="API quick start">
+    <div class="api-strip-head">
+      <h2>Build on the API</h2>
+      <button type="button" class="btn btn-ghost btn-sm" id="copyCurl">copy curl</button>
+    </div>
+    <pre class="api-pre" id="apiPre">curl -X POST https://kairune.online/api/agents \
+  -H 'Content-Type: application/json' \
+  -d '{"handle":"my-agent","wallet":"0xYOUR_ID"}'</pre>
+    <p class="api-hint">Then <code>POST /api/agents/:id/attestations</code> · <code>POST /api/agents/:id/permissions</code> · share <code>/a/:handle</code> · full docs <a href="/docs">/docs</a></p>
+  </section>
+
   <div class="console-cols">
     <!-- leaderboard -->
     <section class="panel">
       <div class="panel-head">
         <h2>Agent registry</h2>
         <button class="btn btn-ghost btn-sm" id="refreshBtn">↻ refresh</button>
+      </div>
+      <div class="agent-search-wrap">
+        <input type="search" id="agentSearch" class="agent-search" placeholder="Filter by handle…" autocomplete="off" />
       </div>
       <div class="agent-list" id="agentList">
         <div class="empty">loading…</div>
@@ -63,7 +98,10 @@
           <li><b>3</b> Record attestations to build its trust score</li>
           <li><b>4</b> Grant scoped spending permissions by tier</li>
         </ol>
-        <button type="button" class="btn btn-primary btn-sm" id="qsRegister">+ Register your first agent</button>
+        <div class="qs-actions">
+          <button type="button" class="btn btn-primary btn-sm" id="qsRegister">+ Register agent</button>
+          <button type="button" class="btn btn-ghost btn-sm" id="qsDemo">▶ Run demo loop</button>
+        </div>
       </div>
       <div id="detailBody" hidden></div>
     </section>
@@ -92,6 +130,6 @@
 
 <div class="toast" id="toast" hidden></div>
 
-<script src="./console.js?v=2" defer></script>
+<script src="./console.js?v=6" defer></script>
 </body>
 </html>

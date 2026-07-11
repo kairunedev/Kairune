@@ -1,0 +1,17 @@
+{
+  "mcpServers": {
+    "kairune": {
+      "command": "node",
+      "args": ["${workspaceFolder}/virtuals/mcp-server.mjs"],
+      "env": {
+        "KAIRUNE_API_BASE": "https://kairune.online/api"
+      }
+    },
+    "virtuals": {
+      "url": "https://mcp.acp.virtuals.io/"
+    },
+    "base-mcp": {
+      "url": "https://mcp.base.org"
+    }
+  }
+}

@@ -1,7 +1,7 @@
 'use strict';
 // Kairune Console — dashboard logic (vanilla JS, no build step).
 const API = '/api';
-let state = { agents: [], selectedId: null, meta: null };
+let state = { agents: [], selectedId: null, meta: null, holderWallet: '' };
 
 // ---- tiny helpers ----
 const $ = (sel, root) => (root || document).querySelector(sel);
@@ -13,8 +13,11 @@ const el = (tag, cls, html) => {
 };
 
 async function api(path, opts) {
+  const headers = { 'Content-Type': 'application/json' };
+  const wallet = (state.holderWallet || '').trim();
+  if (wallet) headers['X-Kairune-Wallet'] = wallet;
   const res = await fetch(API + path, Object.assign({
-    headers: { 'Content-Type': 'application/json' },
+    headers,
   }, opts || {}));
   const data = await res.json().catch(() => ({}));
   if (!res.ok) throw new Error(data.error || ('HTTP ' + res.status));
@@ -58,10 +61,26 @@ function tierClass(t) { return 'tierpill tier-' + t; }
 async function loadAgents() {
   const { agents } = await api('/agents');
   state.agents = agents;
+  renderAgentList();
+}
+
+function renderAgentList() {
   const list = $('#agentList');
   list.innerHTML = '';
-  if (!agents.length) {
+  const q = (($('#agentSearch') && $('#agentSearch').value) || '').trim().toLowerCase();
+  const agents = !q
+    ? state.agents
+    : state.agents.filter((a) =>
+        a.handle.toLowerCase().includes(q) ||
+        (a.wallet || '').toLowerCase().includes(q) ||
+        (a.operator || '').toLowerCase().includes(q)
+      );
+  if (!state.agents.length) {
     list.appendChild(el('div', 'empty', 'No agents yet. Register one to begin.'));
+    return;
+  }
+  if (!agents.length) {
+    list.appendChild(el('div', 'empty', 'No agents match “' + q + '”'));
     return;
   }
   agents.forEach((a) => {
@@ -80,13 +99,9 @@ const CIRC = 2 * Math.PI * 53;
 
 async function selectAgent(id) {
   state.selectedId = id;
-  document.querySelectorAll('.agent-row').forEach((r) => r.classList.remove('active'));
+  renderAgentList();
   const data = await api('/agents/' + id);
   renderDetail(data);
-  // highlight selected
-  const idx = state.agents.findIndex((a) => a.id === id);
-  const rows = document.querySelectorAll('.agent-row');
-  if (rows[idx]) rows[idx].classList.add('active');
 }
 
 function renderDetail(data) {
@@ -105,6 +120,7 @@ function renderDetail(data) {
   html += '<p class="h">' + a.handle + '</p>';
   html += '<p class="w">' + a.wallet + '</p>';
   if (a.operator) html += '<p class="op">operator · ' + a.operator + '</p>';
+  html += '<button type="button" class="share-btn" id="shareAgent" data-handle="' + a.handle + '">copy share link</button>';
   html += '</div><div class="' + tierClass(a.tier) + '">' + (a.label || '') + '</div></div>';
 
   // score hero ring
@@ -149,6 +165,19 @@ function renderDetail(data) {
   renderPermList(data.permissions || [], a.id);
   renderHist(data.attestations || []);
   wireGrantForm(a);
+
+  const share = $('#shareAgent');
+  if (share) {
+    share.addEventListener('click', async () => {
+      const url = location.origin + '/a/' + encodeURIComponent(a.handle);
+      try {
+        await navigator.clipboard.writeText(url);
+        toast('share link copied', 'ok');
+      } catch (_) {
+        toast(url, 'ok');
+      }
+    });
+  }
 }
 const POSITIVE_KINDS = ['task_completed', 'clean_payment', 'peer_vouch'];
 const NEGATIVE_KINDS = ['dispute', 'chargeback', 'anomaly_flag'];
@@ -285,6 +314,120 @@ function wireModal() {
   });
 }
 
+// ---- demo loop: register → attest → grant (one click) ----
+async function runDemoLoop(btn) {
+  if (btn) { btn.disabled = true; btn.textContent = 'running…'; }
+  const suffix = Date.now().toString(36).slice(-5);
+  const handle = 'try-' + suffix;
+  const wallet = '0xdemo' + suffix + Math.random().toString(16).slice(2, 10);
+  try {
+    const created = await api('/agents', {
+      method: 'POST',
+      body: JSON.stringify({ handle, wallet, operator: 'demo-loop' }),
+    });
+    const id = created.agent.id;
+    for (let i = 0; i < 5; i++) {
+      await api('/agents/' + id + '/attestations', {
+        method: 'POST',
+        body: JSON.stringify({ kind: i % 2 ? 'clean_payment' : 'task_completed' }),
+      });
+    }
+    await api('/agents/' + id + '/attestations', {
+      method: 'POST',
+      body: JSON.stringify({ kind: 'peer_vouch' }),
+    });
+    await api('/agents/' + id + '/permissions', {
+      method: 'POST',
+      body: JSON.stringify({ category: 'compute', ceiling: 100, period: 'day', granted_by: 'demo-loop' }),
+    });
+    await refreshAll();
+    await selectAgent(id);
+    history.replaceState(null, '', '/app/?agent=' + encodeURIComponent(handle));
+    toast(handle + ' demo complete — score updated', 'ok');
+  } catch (e) {
+    toast(e.message, 'err');
+  } finally {
+    if (btn) { btn.disabled = false; btn.textContent = btn.id === 'runDemo' ? '▶ Demo loop' : '▶ Run demo loop'; }
+  }
+}
+
+function wireApiStrip() {
+  const btn = $('#copyCurl');
+  if (!btn) return;
+  btn.addEventListener('click', async () => {
+    const text = ($('#apiPre') && $('#apiPre').textContent) || '';
+    try {
+      await navigator.clipboard.writeText(text.trim());
+      toast('curl copied', 'ok');
+    } catch (_) {
+      toast('copy failed', 'err');
+    }
+  });
+}
+
+async function openDeepLink() {
+  const params = new URLSearchParams(location.search);
+  const handle = params.get('agent');
+  const id = params.get('id');
+  if (id) {
+    await selectAgent(id);
+    return;
+  }
+  if (handle) {
+    const match = state.agents.find((a) => a.handle.toLowerCase() === handle.toLowerCase());
+    if (match) {
+      await selectAgent(match.id);
+      return;
+    }
+    try {
+      const data = await api('/agents/' + encodeURIComponent(handle));
+      if (data.agent) await selectAgent(data.agent.id);
+    } catch (_) { /* ignore */ }
+  }
+}
+
+function wireHolderStrip() {
+  const input = $('#holderWallet');
+  const badge = $('#holderBadge');
+  const note = $('#holderNote');
+  if (!input) return;
+  try {
+    const saved = localStorage.getItem('kairune_holder_wallet') || '';
+    if (saved) {
+      input.value = saved;
+      state.holderWallet = saved;
+    }
+  } catch (_) {}
+
+  async function refreshToken() {
+    try {
+      const t = await api('/token');
+      if (note) {
+        note.textContent = t.is_holder
+          ? ('Holder rate limit: ' + t.write_rate_limit + ' writes / min')
+          : (t.note || note.textContent);
+      }
+      if (badge) {
+        badge.textContent = t.is_holder ? 'holder' : 'guest';
+        badge.className = 'holder-badge' + (t.is_holder ? ' on' : '');
+      }
+    } catch (_) {}
+  }
+
+  input.addEventListener('change', () => {
+    state.holderWallet = input.value.trim();
+    try { localStorage.setItem('kairune_holder_wallet', state.holderWallet); } catch (_) {}
+    refreshToken();
+  });
+  input.addEventListener('keydown', (e) => {
+    if (e.key === 'Enter') {
+      e.preventDefault();
+      input.blur();
+    }
+  });
+  refreshToken();
+}
+
 // ---- refresh orchestration ----
 async function refreshAll() {
   try {
@@ -299,16 +442,32 @@ async function refreshAll() {
 // ---- boot ----
 async function boot() {
   wireModal();
+  wireApiStrip();
+  wireHolderStrip();
   $('#refreshBtn').addEventListener('click', refreshAll);
+  const search = $('#agentSearch');
+  if (search) search.addEventListener('input', renderAgentList);
   const qs = $('#qsRegister');
   if (qs) qs.addEventListener('click', openModal);
+  const runDemo = $('#runDemo');
+  if (runDemo) runDemo.addEventListener('click', () => runDemoLoop(runDemo));
+  const qsDemo = $('#qsDemo');
+  if (qsDemo) qsDemo.addEventListener('click', () => runDemoLoop(qsDemo));
   $('.logo').addEventListener('click', () => { location.href = '/'; });
   try {
     state.meta = await api('/meta');
     setConn(true);
   } catch (e) { setConn(false); }
   await refreshAll();
-  // auto-refresh stats every 15 seconds
+  await openDeepLink();
+
+  const params = new URLSearchParams(location.search);
+  if (params.get('demo') === '1') {
+    history.replaceState(null, '', '/app/');
+    const btn = runDemo || qsDemo;
+    await runDemoLoop(btn);
+  }
+
   setInterval(loadStats, 15000);
 }
 

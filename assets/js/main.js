@@ -73,7 +73,7 @@ if (track) {
 // kinetic marquee band
 const marquee = document.getElementById('marqueeTrack');
 if (marquee) {
-  const phrase = '$KAIRUNE IS LIVE ON <b>ROBINHOOD</b> — <b>KAIRUNE</b> — THE TRUST LAYER FOR AGENTS THAT SPEND — ';
+  const phrase = '$KAIRUNE IS LIVE ON <b>VIRTUALS</b> · <b>ROBINHOOD CHAIN</b> — <b>KAIRUNE</b> — THE TRUST LAYER FOR AGENTS THAT SPEND — ';
   marquee.innerHTML = `<span>${phrase.repeat(4)}</span><span>${phrase.repeat(4)}</span>`;
   if (reduced) marquee.style.animation = 'none';
 }
@@ -372,3 +372,25 @@ if (caCopy && caValue) {
     }
   });
 }
+
+// live registry stats (social proof → console)
+(async function loadLiveStats() {
+  const els = {
+    agents: document.getElementById('lsAgents'),
+    att: document.getElementById('lsAtt'),
+    perms: document.getElementById('lsPerms'),
+    avg: document.getElementById('lsAvg'),
+  };
+  if (!els.agents) return;
+  try {
+    const r = await fetch('/api/stats');
+    if (!r.ok) return;
+    const s = await r.json();
+    els.agents.textContent = s.total_agents;
+    els.att.textContent = s.total_attestations;
+    els.perms.textContent = s.active_permissions;
+    els.avg.textContent = s.avg_score;
+  } catch (_) {
+    /* keep dashes */
+  }
+})();

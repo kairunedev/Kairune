@@ -26,6 +26,11 @@ const permissionService = require('../services/permissionService');
 const trustScore = require('../services/trustScore');
 const { getDb } = require('../db');
 const { rateLimit } = require('../middleware/rateLimit');
+const {
+  assertValidHandle,
+  requireAdmin,
+} = require('../middleware/moderation');
+const { tokenStatus } = require('../services/tokenGate');
 
 const router = express.Router();
 
@@ -65,9 +70,14 @@ router.get('/meta', (req, res) => {
   });
 });
 
+router.get('/token', (req, res) => {
+  res.json(tokenStatus(req));
+});
+
 router.get(
   '/stats',
   wrap(async (req, res) => {
+    await agentService.purgeExpiredDemos().catch(() => 0);
     const db = await getDb();
     const one = async (sql) => (await db.execute(sql)).rows[0];
 
@@ -103,11 +113,19 @@ router.get(
 router.get(
   '/agents',
   wrap(async (req, res) => {
+    await agentService.purgeExpiredDemos().catch(() => 0);
     const limit = Math.min(parseInt(req.query.limit, 10) || 50, 200);
     const offset = parseInt(req.query.offset, 10) || 0;
     const status = req.query.status;
+    const includeDemo =
+      req.query.include_demo === '1' || req.query.include_demo === 'true';
     res.json({
-      agents: await agentService.listAgents({ limit, offset, status }),
+      agents: await agentService.listAgents({
+        limit,
+        offset,
+        status,
+        includeDemo,
+      }),
     });
   })
 );
@@ -116,13 +134,11 @@ router.post(
   '/agents',
   wrap(async (req, res) => {
     requireFields(req.body, ['handle', 'wallet']);
-    const handle = String(req.body.handle).trim().toLowerCase();
+    const op = String(req.body.operator || '').toLowerCase();
+    const handle = assertValidHandle(req.body.handle, {
+      allowTry: op === 'demo-loop',
+    });
     const wallet = String(req.body.wallet).trim();
-    if (!/^[a-zA-Z0-9\-_]+$/.test(handle)) {
-      const err = new Error('Handle may only use letters, numbers, hyphens, and underscores');
-      err.status = 400;
-      throw err;
-    }
     if (wallet.length < 6) {
       const err = new Error('Wallet / identity must be at least 6 characters');
       err.status = 400;
@@ -141,7 +157,7 @@ router.post(
       throw err;
     }
     const agent = await agentService.createAgent({
-      handle: req.body.handle,
+      handle,
       wallet: req.body.wallet,
       operator: req.body.operator,
     });
@@ -192,6 +208,7 @@ router.patch(
 router.delete(
   '/agents/:id',
   wrap(async (req, res) => {
+    requireAdmin(req);
     const ok = await agentService.deleteAgent(req.params.id);
     if (!ok) {
       const err = new Error('Agent not found');

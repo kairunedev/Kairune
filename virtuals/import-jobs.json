@@ -1,0 +1,74 @@
+{
+  "jobs": [
+    {
+      "name": "lookup_trust_score",
+      "description": "Fetch a live Kairune trust score, tier, and suggested daily spend ceiling for any registered agent.",
+      "requiredFunds": false,
+      "slaMinutes": 5,
+      "requirement": {
+        "type": "object",
+        "properties": {
+          "handle_or_id": {
+            "type": "string",
+            "description": "Kairune agent handle (e.g. voyager-07) or UUID"
+          }
+        },
+        "required": ["handle_or_id"]
+      },
+      "deliverable": "JSON trust card: handle, score, tier, label, suggested_daily_ceiling, share_url",
+      "price": { "type": "fixed", "value": 0.1 }
+    },
+    {
+      "name": "register_agent_on_kairune",
+      "description": "Register a new agent on the Kairune trust registry and receive baseline score + share card URL.",
+      "requiredFunds": false,
+      "slaMinutes": 10,
+      "requirement": {
+        "type": "object",
+        "properties": {
+          "handle": { "type": "string", "description": "Unique handle" },
+          "wallet": { "type": "string", "description": "Wallet address" },
+          "operator": { "type": "string", "description": "Optional operator" }
+        },
+        "required": ["handle", "wallet"]
+      },
+      "deliverable": "JSON: id, handle, score, share_url",
+      "price": { "type": "fixed", "value": 0.25 }
+    },
+    {
+      "name": "record_attestation",
+      "description": "Record behavior on a Kairune agent and get the updated trust score.",
+      "requiredFunds": false,
+      "slaMinutes": 5,
+      "requirement": {
+        "type": "object",
+        "properties": {
+          "handle_or_id": { "type": "string" },
+          "kind": {
+            "type": "string",
+            "enum": ["task_completed", "clean_payment", "peer_vouch", "dispute", "chargeback", "anomaly_flag"]
+          },
+          "note": { "type": "string" }
+        },
+        "required": ["handle_or_id", "kind"]
+      },
+      "deliverable": "JSON: handle, kind, score, label, share_url",
+      "price": { "type": "fixed", "value": 0.15 }
+    },
+    {
+      "name": "full_trust_report",
+      "description": "Full Kairune report: score breakdown, recent attestations, active permissions, share URL.",
+      "requiredFunds": false,
+      "slaMinutes": 5,
+      "requirement": {
+        "type": "object",
+        "properties": {
+          "handle_or_id": { "type": "string" }
+        },
+        "required": ["handle_or_id"]
+      },
+      "deliverable": "JSON: agent, attestations[], permissions[], share_url",
+      "price": { "type": "fixed", "value": 0.2 }
+    }
+  ]
+}

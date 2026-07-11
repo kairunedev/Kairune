@@ -1,0 +1,33 @@
+# Paste into Virtuals -> Agent Info -> Offerings (one offering at a time)
+
+## 1. Lookup Trust Score
+Name: Lookup Trust Score
+Price: 0.10 USDC | SLA: 5 min
+Requirements schema:
+{"type":"object","properties":{"handle_or_id":{"type":"string","description":"Kairune agent handle or UUID"}},"required":["handle_or_id"]}
+Deliverable: JSON trust card (handle, score, tier, label, suggested_daily_ceiling, share_url)
+Test requirement: {"handle_or_id":"voyager-07"}
+
+## 2. Register Agent on Kairune
+Name: Register Agent on Kairune
+Price: 0.25 USDC | SLA: 10 min
+Requirements schema:
+{"type":"object","properties":{"handle":{"type":"string"},"wallet":{"type":"string"},"operator":{"type":"string"}},"required":["handle","wallet"]}
+Deliverable: JSON { id, handle, score, share_url }
+Test: {"handle":"acp-test-01","wallet":"0xacptestwallet001"}
+
+## 3. Record Attestation
+Name: Record Attestation
+Price: 0.15 USDC | SLA: 5 min
+Requirements schema:
+{"type":"object","properties":{"handle_or_id":{"type":"string"},"kind":{"type":"string","enum":["task_completed","clean_payment","peer_vouch","dispute","chargeback","anomaly_flag"]},"note":{"type":"string"}},"required":["handle_or_id","kind"]}
+Deliverable: JSON { handle, kind, score, label, share_url }
+Test: {"handle_or_id":"voyager-07","kind":"task_completed"}
+
+## 4. Full Trust Report
+Name: Full Trust Report
+Price: 0.20 USDC | SLA: 5 min
+Requirements schema:
+{"type":"object","properties":{"handle_or_id":{"type":"string"}},"required":["handle_or_id"]}
+Deliverable: JSON { agent, attestations, permissions, share_url }
+Test: {"handle_or_id":"voyager-07"}

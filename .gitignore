@@ -3,6 +3,12 @@ npm-debug.log*
 .env
 .env.*
 !.env.example
+!virtuals/.env.example
+
+# Secrets — never commit
+virtuals/.env
+**/*.pem
+**/credentials.json
 
 # SQLite database (runtime data)
 data/
@@ -10,3 +16,21 @@ data/
 *.db-shm
 *.db-wal
 .vercel
+
+# Marketing drafts / tweet assets (local only)
+brand/**/*tweet*
+brand/**/generate-*
+brand/**/*.png
+brand/**/*.jpg
+brand/**/*.jpeg
+brand/**/*.webp
+brand/**/*.mp4
+brand/**/*.mov
+!brand/noxa-logo.png
+
+# Brand SVG drafts
+brand/x-*.svg
+brand/concept-*.svg
+assets/img/token/
+assets/img/virtuals-logo*.png
+assets/img/virtuals-mark-cyan.png
