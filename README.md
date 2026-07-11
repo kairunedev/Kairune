@@ -9,37 +9,19 @@ No longer a mockup — you can register an agent, record its behavior (attestati
 ## Architecture
 
 ```
-kairune-project/
-├── index.html              # Landing page (marketing)
-├── app/                    # 🖥️ Live console dashboard (SPA)
-│   ├── index.html
-│   ├── console.css
-│   └── console.js          # Consumes the REST API, renders leaderboard + detail
-├── assets/
-│   ├── css/styles.css      # Design system (dark theme, responsive)
-│   ├── js/main.js          # Landing animations (graph canvas, ticker, marquee)
-│   └── img/                # Logos (SVG + PNG)
-├── server.js               # Express: static + REST API + /health + graceful shutdown
-├── src/
-│   ├── db/
-│   │   ├── schema.sql      # SQLite schema (agents, attestations, permissions)
-│   │   ├── index.js        # DB connection (singleton)
-│   │   └── seed.js         # Demo data
-│   ├── services/
-│   │   ├── trustScore.js   # 🧠 Trust score engine (score + tier + decay)
-│   │   ├── agentService.js
-│   │   ├── attestationService.js
-│   │   └── permissionService.js
-│   ├── routes/api.js       # All REST endpoints
-│   └── tests/              # Unit + integration tests (node:test)
-├── data/                   # SQLite runtime (gitignored, volume in Docker)
-├── package.json            # Dependencies + scripts
-├── .env.example            # Environment variables template
-├── ecosystem.config.cjs    # PM2 configuration
-├── deploy.ps1              # Deploy script to VPS (Windows/PowerShell)
-├── Dockerfile              # Multi-stage build, non-root, healthcheck, volume
-├── docker-compose.yml      # One-command run + volume persist
-└── .dockerignore
+├── index.html              # Landing
+├── app/                    # Live console dashboard
+├── a/                      # Public trust cards (/a/:handle)
+├── docs/                   # API docs
+├── assets/                 # CSS, JS, product logos
+├── api/                    # Vercel serverless entry
+├── server.js               # Express: static + REST + /health
+├── src/                    # DB, services, routes, tests
+├── token/                  # $KAIRUNE metadata
+├── virtuals/               # ACP provider bot + MCP (local run)
+├── package.json
+├── vercel.json
+└── .env.example
 ```
 
 ## How the trust score works
@@ -109,9 +91,11 @@ npm run dev
 ### Pages
 | Method | Path       | Description                                   |
 | ------ | ---------- | --------------------------------------------- |
-| GET    | `/`        | Landing page                                  |
-| GET    | `/app`     | Live console dashboard                         |
-| GET    | `/health`  | Health-check JSON (`{ status, uptime, ... }`) |
+| GET    | `/`          | Landing page                                  |
+| GET    | `/app`       | Live console dashboard                         |
+| GET    | `/docs`      | API docs                                       |
+| GET    | `/a/:handle` | Public trust card                              |
+| GET    | `/health`    | Health-check JSON (`{ status, uptime, ... }`) |
 
 ### REST API (`/api`)
 | Method | Path                              | Description                          |
@@ -158,86 +142,26 @@ Runs unit tests (trust score engine) + integration tests (REST API, using an in-
 
 ---
 
-## Docker
+## Deploy (Vercel + Turso)
 
 ```bash
-# Build + run via compose (use "docker compose" or "docker-compose" depending on version)
-docker-compose up -d --build
-
-# Check status + health
-docker-compose ps
-
-# Logs
-docker-compose logs -f kairune
-
-# Stop
-docker-compose down
-```
-
-Or manually:
-
-```bash
-docker build -t kairune:latest .
-docker run -d -p 3040:3040 --name kairune kairune:latest
-```
-
----
-
-## Deploy to Vercel (serverless + Turso)
-
-Vercel is serverless, so the database moves to **Turso** (SQLite cloud, free). The code auto-detects the Turso env.
-
-Full steps are in **[DEPLOY.md](./DEPLOY.md)**. In short:
-
-```bash
-# 1. Create the Turso DB
-turso db create kairune
-turso db show kairune --url          # → TURSO_DATABASE_URL
-turso db tokens create kairune       # → TURSO_AUTH_TOKEN
-
-# 2. (optional) seed data to the cloud
-TURSO_DATABASE_URL=... TURSO_AUTH_TOKEN=... npm run seed
-
-# 3. Deploy
-vercel
-vercel env add TURSO_DATABASE_URL    # paste URL
-vercel env add TURSO_AUTH_TOKEN      # paste token
+vercel env add TURSO_DATABASE_URL
+vercel env add TURSO_AUTH_TOKEN
 vercel --prod
 ```
 
-Static assets (landing, `/app`, assets) are served by the CDN; `/api/*` + `/health` run as a serverless function.
+Static assets on CDN; `/api/*` + `/health` as serverless. Live: [kairune.online](https://kairune.online).
 
-## Deploy to a VPS (PM2)
-
-`ecosystem.config.cjs` and `deploy.ps1` are already provided.
-
-```bash
-# On the server (manual):
-npm ci --omit=dev
-pm2 start ecosystem.config.cjs
-pm2 save
-
-# Restart after an update:
-pm2 restart kairune
-
-# Check health:
-curl http://127.0.0.1:3040/health
-```
-
-From a local Windows machine, `deploy.ps1` packages, uploads via `scp`, installs, and restarts PM2 on the VPS automatically.
+ACP provider bot (Virtuals jobs): see `virtuals/SETUP.md` — run locally, not on Vercel.
 
 ---
 
 ## Server features
 
-- ✅ Gzip compression (`compression`)
-- ✅ Security headers (`X-Content-Type-Options`, `X-Frame-Options`, `Referrer-Policy`, `Permissions-Policy`)
-- ✅ Caching: static assets 30 days, HTML `no-cache`
-- ✅ Health-check endpoint for PM2 / Docker / uptime monitors
-- ✅ Graceful shutdown (SIGTERM / SIGINT)
-- ✅ 404 & 500 handlers
-- ✅ `trust proxy` for running behind nginx / a load balancer
-- ✅ Rate limiting on mutating endpoints (POST/PATCH/DELETE), per client IP — reads stay free. Tune via `RATE_LIMIT_MAX` / `RATE_LIMIT_WINDOW_MS`.
+- Gzip, security headers, static caching
+- Health-check + graceful shutdown
+- Rate limiting on writes; soft `$KAIRUNE` holder boost via `TOKEN_HOLDER_WALLETS`
+- Optional `ADMIN_KEY` for DELETE moderation
 
 ---
 

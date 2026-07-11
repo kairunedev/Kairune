@@ -17,20 +17,15 @@ data/
 *.db-wal
 .vercel
 
-# Marketing drafts / tweet assets (local only)
-brand/**/*tweet*
-brand/**/generate-*
-brand/**/*.png
-brand/**/*.jpg
-brand/**/*.jpeg
-brand/**/*.webp
-brand/**/*.mp4
-brand/**/*.mov
-!brand/noxa-logo.png
-
-# Brand SVG drafts
-brand/x-*.svg
-brand/concept-*.svg
+# Local-only (drafts, demos, self-host tooling)
+brand/
+scripts/
+DEPLOY.md
+Dockerfile
+docker-compose.yml
+.dockerignore
+ecosystem.config.cjs
+deploy.ps1
 assets/img/token/
 assets/img/virtuals-logo*.png
 assets/img/virtuals-mark-cyan.png
