@@ -5,19 +5,20 @@ npm-debug.log*
 !.env.example
 !virtuals/.env.example
 
-# Secrets — never commit
+# Secrets
 virtuals/.env
 **/*.pem
 **/credentials.json
 
-# SQLite database (runtime data)
+# Runtime
 data/
 *.db
 *.db-shm
 *.db-wal
 .vercel
 
-# Local-only (drafts, demos, self-host tooling)
+# Local-only
+.cursor/
 brand/
 scripts/
 DEPLOY.md
@@ -29,3 +30,8 @@ deploy.ps1
 assets/img/token/
 assets/img/virtuals-logo*.png
 assets/img/virtuals-mark-cyan.png
+assets/img/logo-lockup.*
+assets/img/logo-mark.png
+assets/img/robinhood-feather-dark.png
+assets/img/robinhood-official.png
+assets/img/virtuals-mark.svg

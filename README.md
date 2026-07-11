@@ -9,18 +9,12 @@ No longer a mockup — you can register an agent, record its behavior (attestati
 ## Architecture
 
 ```
-├── index.html              # Landing
-├── app/                    # Live console dashboard
-├── a/                      # Public trust cards (/a/:handle)
-├── docs/                   # API docs
-├── assets/                 # CSS, JS, product logos
-├── api/                    # Vercel serverless entry
-├── server.js               # Express: static + REST + /health
-├── src/                    # DB, services, routes, tests
-├── token/                  # $KAIRUNE metadata
-├── virtuals/               # ACP provider bot + MCP (local run)
-├── package.json
-├── vercel.json
+├── index.html / app / a / docs   # product UI
+├── assets/                      # CSS, JS, logos in use
+├── api/ + server.js + src/      # API + trust engine
+├── token/metadata.json          # $KAIRUNE metadata
+├── virtuals/                    # ACP provider (local)
+├── package.json + vercel.json
 └── .env.example
 ```
 
