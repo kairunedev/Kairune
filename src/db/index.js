@@ -104,6 +104,29 @@ async function initSchema(c) {
   for (const stmt of statements) {
     await c.execute(stmt);
   }
+
+  await ensureAttestationColumns(c);
+}
+
+/**
+ * Idempotently add the verification columns to the attestations table.
+ * CREATE TABLE IF NOT EXISTS will not alter an existing table, so new
+ * columns are added via PRAGMA table_info inspection + ALTER TABLE.
+ * @param {import('@libsql/client').Client} c
+ */
+async function ensureAttestationColumns(c) {
+  const info = await c.execute('PRAGMA table_info(attestations)');
+  const existing = new Set(info.rows.map((r) => r.name));
+  const additions = [
+    ["verification_status", "ALTER TABLE attestations ADD COLUMN verification_status TEXT NOT NULL DEFAULT 'unverified'"],
+    ['issuer_id', 'ALTER TABLE attestations ADD COLUMN issuer_id TEXT'],
+    ['issuer_key_id', 'ALTER TABLE attestations ADD COLUMN issuer_key_id TEXT'],
+  ];
+  for (const [col, sql] of additions) {
+    if (!existing.has(col)) {
+      await c.execute(sql);
+    }
+  }
 }
 
 /**
