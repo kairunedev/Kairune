@@ -255,3 +255,63 @@ test('revoking a non-existent key returns 404', async () => {
   const r = await req('DELETE', `/api/issuers/${id}/keys/nope`, null, { 'X-Issuer-Key': apiKey });
   assert.strictEqual(r.status, 404);
 });
+
+test('stale issued_at is rejected (400) — freshness window', async () => {
+  const { id: issuerId, apiKey } = await registerIssuer('stale-iss');
+  const { pem, privateKey } = keypair();
+  const keyRes = await req('POST', `/api/issuers/${issuerId}/keys`, { public_key: pem }, { 'X-Issuer-Key': apiKey });
+  const keyId = keyRes.body.key.id;
+  const agentId = await newAgent('stale-agent');
+
+  const issued_at = new Date(Date.now() - 3600 * 1000).toISOString(); // 1h old
+  const fields = {
+    agent_id: agentId,
+    kind: 'task_completed',
+    amount: 0,
+    note: null,
+    issuer_id: issuerId,
+    issuer_key_id: keyId,
+    issued_at,
+  };
+  const signature = crypto
+    .sign(null, Buffer.from(canonicalPayload(fields)), privateKey)
+    .toString('base64');
+
+  const r = await req(
+    'POST',
+    `/api/agents/${agentId}/attestations`,
+    { kind: 'task_completed', issuer_id: issuerId, issuer_key_id: keyId, signature, issued_at },
+    { 'X-Issuer-Key': apiKey }
+  );
+  assert.strictEqual(r.status, 400);
+});
+
+test('reusing a signature is rejected as replay (409)', async () => {
+  const { id: issuerId, apiKey } = await registerIssuer('replay-iss');
+  const { pem, privateKey } = keypair();
+  const keyRes = await req('POST', `/api/issuers/${issuerId}/keys`, { public_key: pem }, { 'X-Issuer-Key': apiKey });
+  const keyId = keyRes.body.key.id;
+  const agentId = await newAgent('replay-agent');
+
+  const issued_at = new Date().toISOString();
+  const fields = {
+    agent_id: agentId,
+    kind: 'clean_payment',
+    amount: 0,
+    note: null,
+    issuer_id: issuerId,
+    issuer_key_id: keyId,
+    issued_at,
+  };
+  const signature = crypto
+    .sign(null, Buffer.from(canonicalPayload(fields)), privateKey)
+    .toString('base64');
+  const body = { kind: 'clean_payment', issuer_id: issuerId, issuer_key_id: keyId, signature, issued_at };
+
+  const first = await req('POST', `/api/agents/${agentId}/attestations`, body, { 'X-Issuer-Key': apiKey });
+  assert.strictEqual(first.status, 201);
+  assert.strictEqual(first.body.attestation.verification_status, 'verified');
+
+  const second = await req('POST', `/api/agents/${agentId}/attestations`, body, { 'X-Issuer-Key': apiKey });
+  assert.strictEqual(second.status, 409);
+});
