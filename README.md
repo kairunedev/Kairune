@@ -42,6 +42,8 @@ Attestations can be **cryptographically signed** so the data behind a score is p
 
 Signing uses Node's built-in `crypto` (no extra dependency). Revoked keys cause their attestations to be treated as `unverified`.
 
+**Replay protection:** signed submissions must include an `issued_at` timestamp within a freshness window (`REPLAY_MAX_AGE_SECONDS`, default 300s, plus `REPLAY_FUTURE_SKEW_SECONDS` clock skew), and each signature may be used only once — a reused signature is rejected with `409`.
+
 ---
 
 ## Running locally

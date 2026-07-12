@@ -25,6 +25,7 @@ const attestationService = require('../services/attestationService');
 const permissionService = require('../services/permissionService');
 const issuerService = require('../services/issuerService');
 const verification = require('../services/verification');
+const replayGuard = require('../services/replayGuard');
 const trustScore = require('../services/trustScore');
 const { getDb } = require('../db');
 const { rateLimit } = require('../middleware/rateLimit');
@@ -72,6 +73,7 @@ router.get('/meta', (req, res) => {
     max_score: trustScore.MAX_SCORE,
     unverified_weight_factor: trustScore.resolveUnverifiedFactor(),
     signature_algorithm: 'ed25519',
+    signature_max_age_seconds: replayGuard.maxAgeSeconds(),
   });
 });
 
@@ -281,6 +283,14 @@ router.post(
       throw err;
     }
 
+    // Freshness: issued_at must be present and within the replay window.
+    const fresh = replayGuard.checkFreshness(req.body.issued_at);
+    if (!fresh.ok) {
+      const err = new Error(fresh.reason);
+      err.status = 400;
+      throw err;
+    }
+
     // Referenced issuer must exist.
     const referenced = await issuerService.getIssuer(issuer_id);
     if (!referenced) {
@@ -325,6 +335,14 @@ router.post(
     if (outcome.status !== 'verified' && outcome.reason !== 'key_revoked') {
       const err = new Error('Signature verification failed');
       err.status = 400;
+      throw err;
+    }
+
+    // Replay guard: each valid signature may be used once.
+    const firstUse = await replayGuard.reserveSignature(signature, issuer_id);
+    if (!firstUse) {
+      const err = new Error('Signature already used (replay rejected)');
+      err.status = 409;
       throw err;
     }
 
