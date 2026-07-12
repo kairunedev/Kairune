@@ -46,6 +46,64 @@ CREATE INDEX IF NOT EXISTS idx_attestations_agent ON attestations(agent_id);
 CREATE INDEX IF NOT EXISTS idx_attestations_kind  ON attestations(kind);
 
 -- ---------------------------------------------------------------------------
+-- issuers: registered parties allowed to submit verifiable (signed) attestations
+-- ---------------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS issuers (
+  id            TEXT PRIMARY KEY,              -- uuid
+  display_name  TEXT NOT NULL,                 -- 1..200 chars
+  api_key_hash  TEXT NOT NULL UNIQUE,          -- sha256 of the plaintext API key
+  status        TEXT NOT NULL DEFAULT 'active' -- active | disabled
+                  CHECK (status IN ('active', 'disabled')),
+  created_at    TEXT NOT NULL
+);
+
+-- ---------------------------------------------------------------------------
+-- issuer_keys: Ed25519 public keys used to verify an issuer's signatures
+-- ---------------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS issuer_keys (
+  id            TEXT PRIMARY KEY,              -- uuid
+  issuer_id     TEXT NOT NULL,
+  public_key    TEXT NOT NULL,                 -- SPKI PEM (Ed25519)
+  algo          TEXT NOT NULL DEFAULT 'ed25519',
+  status        TEXT NOT NULL DEFAULT 'active' -- active | revoked
+                  CHECK (status IN ('active', 'revoked')),
+  created_at    TEXT NOT NULL,
+  revoked_at    TEXT,
+  FOREIGN KEY (issuer_id) REFERENCES issuers(id) ON DELETE CASCADE
+);
+
+CREATE INDEX IF NOT EXISTS idx_issuer_keys_issuer ON issuer_keys(issuer_id);
+
+-- ---------------------------------------------------------------------------
+-- issuers: registered parties authorized to submit verifiable attestations
+-- ---------------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS issuers (
+  id            TEXT PRIMARY KEY,              -- uuid
+  display_name  TEXT NOT NULL,                 -- 1..200 chars
+  api_key_hash  TEXT NOT NULL UNIQUE,          -- sha256 hex of the plaintext key
+  status        TEXT NOT NULL DEFAULT 'active' -- active | disabled
+                  CHECK (status IN ('active', 'disabled')),
+  created_at    TEXT NOT NULL
+);
+
+-- ---------------------------------------------------------------------------
+-- issuer_keys: Ed25519 public keys belonging to an issuer
+-- ---------------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS issuer_keys (
+  id            TEXT PRIMARY KEY,              -- uuid
+  issuer_id     TEXT NOT NULL,
+  public_key    TEXT NOT NULL,                 -- SPKI PEM
+  algo          TEXT NOT NULL DEFAULT 'ed25519',
+  status        TEXT NOT NULL DEFAULT 'active' -- active | revoked
+                  CHECK (status IN ('active', 'revoked')),
+  created_at    TEXT NOT NULL,
+  revoked_at    TEXT,
+  FOREIGN KEY (issuer_id) REFERENCES issuers(id) ON DELETE CASCADE
+);
+
+CREATE INDEX IF NOT EXISTS idx_issuer_keys_issuer ON issuer_keys(issuer_id);
+
+-- ---------------------------------------------------------------------------
 -- permissions: scoped spending grants (revocable)
 -- ---------------------------------------------------------------------------
 CREATE TABLE IF NOT EXISTS permissions (

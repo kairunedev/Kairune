@@ -43,7 +43,12 @@ function rateLimit(req, res, next) {
   const wallet = walletFromReq(req);
   const holder = isHolder(wallet);
   const limit = holder ? HOLDER_MAX : MAX;
-  const key = holder ? 'w:' + wallet : 'ip:' + clientIp(req);
+  const issuerKey = req.get('x-issuer-key') || '';
+  const key = holder
+    ? 'w:' + wallet
+    : issuerKey
+      ? 'k:' + issuerKey
+      : 'ip:' + clientIp(req);
 
   const now = Date.now();
   let b = buckets.get(key);
