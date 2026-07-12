@@ -23,9 +23,12 @@ const express = require('express');
 const agentService = require('../services/agentService');
 const attestationService = require('../services/attestationService');
 const permissionService = require('../services/permissionService');
+const issuerService = require('../services/issuerService');
+const verification = require('../services/verification');
 const trustScore = require('../services/trustScore');
 const { getDb } = require('../db');
 const { rateLimit } = require('../middleware/rateLimit');
+const { requireIssuer } = require('../middleware/issuerAuth');
 const {
   assertValidHandle,
   requireAdmin,
@@ -67,6 +70,8 @@ router.get('/meta', (req, res) => {
     })),
     periods: permissionService.VALID_PERIODS,
     max_score: trustScore.MAX_SCORE,
+    unverified_weight_factor: trustScore.resolveUnverifiedFactor(),
+    signature_algorithm: 'ed25519',
   });
 });
 
@@ -249,11 +254,88 @@ router.post(
       err.status = 404;
       throw err;
     }
+
+    const { issuer_id, issuer_key_id, signature } = req.body;
+    const present = [issuer_id, issuer_key_id, signature].filter(
+      (v) => v !== undefined && v !== null && v !== ''
+    ).length;
+
+    // Unsigned (backward-compatible) path.
+    if (present === 0) {
+      const result = await attestationService.addAttestation(agent.id, {
+        kind: req.body.kind,
+        amount: req.body.amount,
+        note: req.body.note,
+        weight: req.body.weight,
+        verification_status: 'unverified',
+      });
+      return res.status(201).json(result);
+    }
+
+    // Partial credentials → 400 (all three are required together).
+    if (present < 3) {
+      const err = new Error(
+        'Signed submissions require issuer_id, issuer_key_id and signature together'
+      );
+      err.status = 400;
+      throw err;
+    }
+
+    // Referenced issuer must exist.
+    const referenced = await issuerService.getIssuer(issuer_id);
+    if (!referenced) {
+      const err = new Error('Referenced issuer not found');
+      err.status = 400;
+      throw err;
+    }
+
+    // API key must be present and match the referenced issuer.
+    const apiKey = req.get('x-issuer-key') || '';
+    const authed = apiKey
+      ? await issuerService.getIssuerByApiKey(apiKey)
+      : null;
+    if (!authed || authed.id !== issuer_id) {
+      const err = new Error('Issuer authentication failed');
+      err.status = 401;
+      throw err;
+    }
+
+    // Referenced key must exist for this issuer.
+    const key = await issuerService.getKey(issuer_id, issuer_key_id);
+    if (!key) {
+      const err = new Error('Referenced issuer key not found');
+      err.status = 400;
+      throw err;
+    }
+
+    const fields = {
+      agent_id: agent.id,
+      kind: req.body.kind,
+      amount: req.body.amount,
+      note: req.body.note,
+      issuer_id,
+      issuer_key_id,
+      issued_at: req.body.issued_at,
+      signature,
+    };
+    const outcome = verification.evaluate({ fields, issuerKey: key });
+
+    // A valid signature over an active key → verified. A valid signature over
+    // a revoked key → recorded unverified. An invalid signature → reject.
+    if (outcome.status !== 'verified' && outcome.reason !== 'key_revoked') {
+      const err = new Error('Signature verification failed');
+      err.status = 400;
+      throw err;
+    }
+
     const result = await attestationService.addAttestation(agent.id, {
       kind: req.body.kind,
       amount: req.body.amount,
       note: req.body.note,
       weight: req.body.weight,
+      verification_status: outcome.status,
+      issuer_id,
+      issuer_key_id,
     });
     res.status(201).json(result);
   })
@@ -309,6 +391,62 @@ router.post(
       throw err;
     }
     res.json({ permission });
+  })
+);
+
+// ---------------------------------------------------------------------------
+// Issuers (verifiable attestations)
+// ---------------------------------------------------------------------------
+router.post(
+  '/issuers',
+  wrap(async (req, res) => {
+    requireAdmin(req);
+    requireFields(req.body, ['display_name']);
+    const { issuer, apiKey } = await issuerService.createIssuer({
+      displayName: req.body.display_name,
+    });
+    // api_key returned exactly once, here.
+    res.status(201).json({ issuer, api_key: apiKey });
+  })
+);
+
+router.get(
+  '/issuers',
+  wrap(async (req, res) => {
+    requireAdmin(req);
+    res.json({ issuers: await issuerService.listIssuers() });
+  })
+);
+
+router.post(
+  '/issuers/:id/keys',
+  requireIssuer,
+  wrap(async (req, res) => {
+    if (req.issuer.id !== req.params.id) {
+      const err = new Error('Cannot manage keys for another issuer');
+      err.status = 403;
+      throw err;
+    }
+    requireFields(req.body, ['public_key']);
+    const key = await issuerService.addKey(req.params.id, {
+      publicKeyPem: req.body.public_key,
+      algo: req.body.algo,
+    });
+    res.status(201).json({ key });
+  })
+);
+
+router.delete(
+  '/issuers/:id/keys/:kid',
+  requireIssuer,
+  wrap(async (req, res) => {
+    if (req.issuer.id !== req.params.id) {
+      const err = new Error('Cannot manage keys for another issuer');
+      err.status = 403;
+      throw err;
+    }
+    const key = await issuerService.revokeKey(req.params.id, req.params.kid);
+    res.json({ key });
   })
 );
 

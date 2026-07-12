@@ -21,9 +21,9 @@ test('a new agent (no attestations) gets the baseline score', () => {
 
 test('positive activity raises the score & tier', () => {
   const atts = [];
-  for (let i = 0; i < 40; i++) atts.push({ kind: 'task_completed', created_at: fresh });
-  for (let i = 0; i < 30; i++) atts.push({ kind: 'clean_payment', created_at: fresh });
-  for (let i = 0; i < 10; i++) atts.push({ kind: 'peer_vouch', created_at: fresh });
+  for (let i = 0; i < 40; i++) atts.push({ kind: 'task_completed', created_at: fresh, verification_status: 'verified' });
+  for (let i = 0; i < 30; i++) atts.push({ kind: 'clean_payment', created_at: fresh, verification_status: 'verified' });
+  for (let i = 0; i < 10; i++) atts.push({ kind: 'peer_vouch', created_at: fresh, verification_status: 'verified' });
   const r = computeScore(atts, now);
   assert.ok(r.score > 700, 'score should be high, got ' + r.score);
   assert.ok(r.tier >= 3, 'tier should be >= 3');
@@ -31,16 +31,54 @@ test('positive activity raises the score & tier', () => {
 
 test('negative events lower the score sharply (asymmetric)', () => {
   const positive = [];
-  for (let i = 0; i < 10; i++) positive.push({ kind: 'task_completed', created_at: fresh });
+  for (let i = 0; i < 10; i++) positive.push({ kind: 'task_completed', created_at: fresh, verification_status: 'verified' });
   const clean = computeScore(positive, now).score;
 
   const withBad = positive.concat([
-    { kind: 'chargeback', created_at: fresh },
-    { kind: 'anomaly_flag', created_at: fresh },
+    { kind: 'chargeback', created_at: fresh, verification_status: 'verified' },
+    { kind: 'anomaly_flag', created_at: fresh, verification_status: 'verified' },
   ]);
   const dirty = computeScore(withBad, now).score;
   assert.ok(dirty < clean, 'score with bad events should be lower');
   assert.ok(clean - dirty > 100, 'the penalty should be significant');
+});
+
+test('verification weighting: verified counts fully, unverified is discounted', () => {
+  const verified = [];
+  const unverified = [];
+  for (let i = 0; i < 20; i++) {
+    verified.push({ kind: 'clean_payment', created_at: fresh, verification_status: 'verified' });
+    unverified.push({ kind: 'clean_payment', created_at: fresh, verification_status: 'unverified' });
+  }
+  const rv = computeScore(verified, now);
+  const ru = computeScore(unverified, now);
+  assert.ok(rv.score > ru.score, 'verified should score higher than unverified');
+  assert.strictEqual(rv.breakdown.verifiedCount, 20);
+  assert.strictEqual(ru.breakdown.unverifiedCount, 20);
+});
+
+test('unverified factor defaults to 0.25 and clamps invalid config', () => {
+  const atts = [];
+  for (let i = 0; i < 10; i++) atts.push({ kind: 'clean_payment', created_at: fresh, verification_status: 'unverified' });
+  const dflt = computeScore(atts, now, {});
+  const explicit = computeScore(atts, now, { unverifiedFactor: 0.25 });
+  const invalid = computeScore(atts, now, { unverifiedFactor: 9 });
+  assert.strictEqual(dflt.score, explicit.score);
+  assert.strictEqual(invalid.score, explicit.score, 'invalid factor falls back to default');
+  const full = computeScore(atts, now, { unverifiedFactor: 1 });
+  assert.ok(full.score > dflt.score, 'factor 1.0 scores higher than 0.25');
+});
+
+test('breakdown counts conserve the number of attestations', () => {
+  const atts = [
+    { kind: 'clean_payment', created_at: fresh, verification_status: 'verified' },
+    { kind: 'task_completed', created_at: fresh, verification_status: 'unverified' },
+    { kind: 'peer_vouch', created_at: fresh, verification_status: 'weird' },
+  ];
+  const r = computeScore(atts, now);
+  const { verifiedCount, unverifiedCount, excludedCount } = r.breakdown;
+  assert.strictEqual(verifiedCount + unverifiedCount + excludedCount, atts.length);
+  assert.strictEqual(excludedCount, 1);
 });
 
 test('tierForScore maps thresholds correctly', () => {

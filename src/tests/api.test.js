@@ -9,12 +9,14 @@ process.env.NODE_ENV = 'test';
 const { test, before, after } = require('node:test');
 const assert = require('node:assert');
 const http = require('node:http');
+const crypto = require('node:crypto');
+const { canonicalPayload } = require('../services/verification');
 
 const app = require('../../server');
 let server;
 let base;
 
-function req(method, path, body) {
+function req(method, path, body, headers = {}) {
   return new Promise((resolve, reject) => {
     const data = body ? JSON.stringify(body) : null;
     const r = http.request(
@@ -23,6 +25,7 @@ function req(method, path, body) {
         method,
         headers: {
           'Content-Type': 'application/json',
+          ...headers,
           ...(data ? { 'Content-Length': Buffer.byteLength(data) } : {}),
         },
       },
@@ -38,6 +41,54 @@ function req(method, path, body) {
     if (data) r.write(data);
     r.end();
   });
+}
+
+// Register an issuer + an Ed25519 key; return the material needed to sign.
+async function setupIssuer(name = 'ci-issuer') {
+  const reg = await req('POST', '/api/issuers', { display_name: name });
+  const apiKey = reg.body.api_key;
+  const issuerId = reg.body.issuer.id;
+  const { publicKey, privateKey } = crypto.generateKeyPairSync('ed25519');
+  const pem = publicKey.export({ type: 'spki', format: 'pem' }).toString();
+  const keyRes = await req(
+    'POST',
+    '/api/issuers/' + issuerId + '/keys',
+    { public_key: pem },
+    { 'X-Issuer-Key': apiKey }
+  );
+  return { reg, apiKey, issuerId, keyId: keyRes.body.key.id, privateKey };
+}
+
+// Post a signed attestation for an agent.
+function signedAttest(agentId, kind, ctx, overrides = {}) {
+  const { apiKey, ...bodyOverrides } = overrides;
+  const issued_at = new Date().toISOString();
+  const fields = {
+    agent_id: agentId,
+    kind,
+    amount: undefined,
+    note: undefined,
+    issuer_id: ctx.issuerId,
+    issuer_key_id: ctx.keyId,
+    issued_at,
+  };
+  const canonical = canonicalPayload(fields);
+  const signature = crypto
+    .sign(null, Buffer.from(canonical), ctx.privateKey)
+    .toString('base64');
+  return req(
+    'POST',
+    '/api/agents/' + agentId + '/attestations',
+    {
+      kind,
+      issuer_id: ctx.issuerId,
+      issuer_key_id: ctx.keyId,
+      signature,
+      issued_at,
+      ...bodyOverrides,
+    },
+    { 'X-Issuer-Key': apiKey || ctx.apiKey }
+  );
 }
 
 before(async () => {
@@ -67,6 +118,8 @@ test('GET /api/meta returns kinds and tiers', async () => {
 });
 
 test('full lifecycle: create → attest → score up → permission → revoke', async () => {
+  const ctx = await setupIssuer('lifecycle-issuer');
+
   // create
   const create = await req('POST', '/api/agents', {
     handle: 'itest-01',
@@ -77,12 +130,13 @@ test('full lifecycle: create → attest → score up → permission → revoke',
   const id = create.body.agent.id;
   assert.strictEqual(create.body.agent.score, 120); // baseline
 
-  // add positive attestations
+  // add positive, signed (verified) attestations
   for (let i = 0; i < 15; i++) {
-    await req('POST', '/api/agents/' + id + '/attestations', { kind: 'task_completed' });
+    await signedAttest(id, 'task_completed', ctx);
   }
-  const vouch = await req('POST', '/api/agents/' + id + '/attestations', { kind: 'peer_vouch' });
+  const vouch = await signedAttest(id, 'peer_vouch', ctx);
   assert.strictEqual(vouch.status, 201);
+  assert.strictEqual(vouch.body.attestation.verification_status, 'verified');
   assert.ok(vouch.body.agent.score > 120, 'score should rise above the baseline');
 
   // grant permission (should be capped by tier)
