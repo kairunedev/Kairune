@@ -39,6 +39,21 @@ const TIER_LABELS = Object.freeze([
 const MAX_SCORE = 1000;
 const BASELINE = 120; // neutral starting score for a new agent
 const HALF_LIFE_DAYS = 90; // events decay to half their weight every 90 days
+const DEFAULT_UNVERIFIED_FACTOR = 0.25; // unverified attestations count at 25%
+
+/**
+ * Resolve the unverified weight factor from an explicit option or the
+ * UNVERIFIED_WEIGHT_FACTOR env var, falling back to the default when invalid.
+ * @param {number} [override]
+ * @returns {number} factor in [0,1]
+ */
+function resolveUnverifiedFactor(override) {
+  const raw =
+    override !== undefined ? override : process.env.UNVERIFIED_WEIGHT_FACTOR;
+  const n = Number(raw);
+  if (!Number.isFinite(n) || n < 0 || n > 1) return DEFAULT_UNVERIFIED_FACTOR;
+  return n;
+}
 
 /**
  * Decay factor based on the event's age (exponential decay).
@@ -71,27 +86,48 @@ function tierForScore(score) {
 
 /**
  * Compute the score from a list of attestations.
- * @param {Array<{kind:string, weight?:number, created_at:string}>} attestations
+ * @param {Array<{kind:string, weight?:number, created_at:string, verification_status?:string}>} attestations
  * @param {number} [nowMs] time override (for tests)
+ * @param {{unverifiedFactor?:number}} [opts]
  * @returns {{
  *   score:number, tier:number, label:string,
  *   breakdown: object, totals: object
  * }}
  */
-function computeScore(attestations, nowMs) {
+function computeScore(attestations, nowMs, opts = {}) {
   const now = nowMs || Date.now();
+  const unverifiedFactor = resolveUnverifiedFactor(opts.unverifiedFactor);
 
   let positive = 0;
   let negative = 0;
   let cleanCount = 0;
+  let verifiedCount = 0;
+  let unverifiedCount = 0;
+  let excludedCount = 0;
   const counts = {};
 
   for (const att of attestations) {
+    // Verification factor: verified counts fully, unverified is discounted,
+    // any other status is excluded from the score entirely.
+    const status =
+      att.verification_status == null ? 'unverified' : att.verification_status;
+    let vFactor;
+    if (status === 'verified') {
+      vFactor = 1.0;
+      verifiedCount += 1;
+    } else if (status === 'unverified') {
+      vFactor = unverifiedFactor;
+      unverifiedCount += 1;
+    } else {
+      excludedCount += 1;
+      continue;
+    }
+
     const base =
       typeof att.weight === 'number' && att.weight !== 0
         ? att.weight
         : KIND_WEIGHTS[att.kind] || 0;
-    const decayed = base * recencyFactor(att.created_at, now);
+    const decayed = base * recencyFactor(att.created_at, now) * vFactor;
 
     counts[att.kind] = (counts[att.kind] || 0) + 1;
 
@@ -121,9 +157,15 @@ function computeScore(attestations, nowMs) {
       positive: Math.round(positive),
       volumeBonus: Math.round(volumeBonus),
       negative: Math.round(negative * 1.15),
+      verifiedCount,
+      unverifiedCount,
+      excludedCount,
     },
     totals: {
       attestations: attestations.length,
+      verified: verifiedCount,
+      unverified: unverifiedCount,
+      excluded: excludedCount,
       byKind: counts,
     },
   };
@@ -146,8 +188,11 @@ module.exports = {
   TIER_THRESHOLDS,
   TIER_LABELS,
   MAX_SCORE,
+  BASELINE,
+  DEFAULT_UNVERIFIED_FACTOR,
   computeScore,
   tierForScore,
   suggestedDailyCeiling,
   recencyFactor,
+  resolveUnverifiedFactor,
 };

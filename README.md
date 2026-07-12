@@ -30,6 +30,18 @@ Every agent has a history of **attestations** (behavior events). The engine comp
 
 The score maps to a **tier**: 0 UNRATED → 1 EMERGING → 2 ESTABLISHED → 3 TRUSTED → 4 PRIME. The tier determines the maximum spending **ceiling** that can be granted.
 
+## Verifiable attestations
+
+Attestations can be **cryptographically signed** so the data behind a score is provably authentic — not just whatever an anonymous caller posted.
+
+- An **issuer** is a registered party (Admin registers it, gets a one-time API key).
+- Issuers register **Ed25519 public keys** and sign each attestation over a canonical payload.
+- The server **verifies** every signed submission and marks it `verified` or `unverified`.
+- The trust engine weights **verified** attestations at `1.0` and **unverified** ones at `UNVERIFIED_WEIGHT_FACTOR` (default `0.25`) — so unsigned data still counts, but less.
+- The existing unsigned flow keeps working unchanged (recorded as `unverified`), so no integration breaks.
+
+Signing uses Node's built-in `crypto` (no extra dependency). Revoked keys cause their attestations to be treated as `unverified`.
+
 ---
 
 ## Running locally
@@ -106,6 +118,16 @@ npm run dev
 | GET    | `/api/agents/:id/permissions`     | List permissions                     |
 | POST   | `/api/agents/:id/permissions`     | Grant permission (capped by tier)    |
 | POST   | `/api/permissions/:pid/revoke`    | Revoke permission (instant)          |
+
+### Issuers — verifiable attestations (`/api`)
+| Method | Path                              | Auth            | Description                          |
+| ------ | --------------------------------- | --------------- | ------------------------------------ |
+| POST   | `/api/issuers`                    | Admin           | Register an issuer (returns API key once) |
+| GET    | `/api/issuers`                    | Admin           | List issuers (no secrets)            |
+| POST   | `/api/issuers/:id/keys`           | `X-Issuer-Key`  | Register an Ed25519 public key       |
+| DELETE | `/api/issuers/:id/keys/:kid`      | `X-Issuer-Key`  | Revoke a key                         |
+
+A signed attestation adds `issuer_id`, `issuer_key_id`, `signature` (base64), and `issued_at` to the `POST /api/agents/:id/attestations` body, plus the `X-Issuer-Key` header.
 
 Examples:
 
