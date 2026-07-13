@@ -102,3 +102,20 @@ CREATE TABLE IF NOT EXISTS permissions (
 );
 
 CREATE INDEX IF NOT EXISTS idx_permissions_agent ON permissions(agent_id);
+
+-- ---------------------------------------------------------------------------
+-- spends: actual charges authorized against a permission (enforces the ceiling)
+-- ---------------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS spends (
+  id            TEXT PRIMARY KEY,              -- uuid
+  permission_id TEXT NOT NULL,
+  agent_id      TEXT NOT NULL,
+  amount        REAL NOT NULL,                 -- charge value (> 0)
+  note          TEXT,
+  created_at    TEXT NOT NULL,
+  FOREIGN KEY (permission_id) REFERENCES permissions(id) ON DELETE CASCADE,
+  FOREIGN KEY (agent_id) REFERENCES agents(id) ON DELETE CASCADE
+);
+
+CREATE INDEX IF NOT EXISTS idx_spends_permission ON spends(permission_id);
+CREATE INDEX IF NOT EXISTS idx_spends_agent ON spends(agent_id);

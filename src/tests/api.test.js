@@ -204,3 +204,83 @@ test('suspended agent cannot get permission → 409', async () => {
   });
   assert.strictEqual(r.status, 409);
 });
+
+// Bring an agent up to a tier that can receive spending permission.
+async function trustedAgent(handle, wallet) {
+  const ctx = await setupIssuer(handle + '-issuer');
+  const create = await req('POST', '/api/agents', { handle, wallet, operator: 'CI' });
+  const id = create.body.agent.id;
+  for (let i = 0; i < 15; i++) await signedAttest(id, 'task_completed', ctx);
+  await signedAttest(id, 'peer_vouch', ctx);
+  return id;
+}
+
+test('spend: authorize within ceiling, then reject over budget', async () => {
+  const id = await trustedAgent('spend-01', '0xspend00000000000000000000000000000000001');
+
+  const grant = await req('POST', '/api/agents/' + id + '/permissions', {
+    category: 'compute',
+    ceiling: 100,
+    period: 'day',
+  });
+  assert.strictEqual(grant.status, 201);
+  const pid = grant.body.permission.id;
+  const ceiling = grant.body.permission.ceiling; // capped by tier
+
+  // First spend of 10 succeeds and reports remaining budget.
+  const ok = await req('POST', '/api/permissions/' + pid + '/spends', {
+    amount: 10,
+    note: 'gpu hour',
+  });
+  assert.strictEqual(ok.status, 201);
+  assert.strictEqual(ok.body.budget.used, 10);
+  assert.strictEqual(ok.body.budget.remaining, ceiling - 10);
+
+  // A spend larger than the remaining budget is rejected with 409.
+  const over = await req('POST', '/api/permissions/' + pid + '/spends', {
+    amount: ceiling, // remaining is ceiling-10, so this exceeds it
+  });
+  assert.strictEqual(over.status, 409);
+
+  // Budget summary reflects only the accepted spend.
+  const budget = await req('GET', '/api/permissions/' + pid + '/budget');
+  assert.strictEqual(budget.status, 200);
+  assert.strictEqual(budget.body.budget.used, 10);
+  assert.strictEqual(budget.body.budget.remaining, ceiling - 10);
+
+  // Spend history lists the accepted charge only.
+  const spends = await req('GET', '/api/permissions/' + pid + '/spends');
+  assert.strictEqual(spends.status, 200);
+  assert.strictEqual(spends.body.spends.length, 1);
+  assert.strictEqual(spends.body.spends[0].amount, 10);
+});
+
+test('spend: revoked permission cannot be charged → 409', async () => {
+  const id = await trustedAgent('spend-02', '0xspend00000000000000000000000000000000002');
+  const grant = await req('POST', '/api/agents/' + id + '/permissions', {
+    category: 'compute',
+    ceiling: 50,
+  });
+  const pid = grant.body.permission.id;
+  await req('POST', '/api/permissions/' + pid + '/revoke');
+
+  const r = await req('POST', '/api/permissions/' + pid + '/spends', { amount: 5 });
+  assert.strictEqual(r.status, 409);
+});
+
+test('spend: non-positive amount → 400, unknown permission → 404', async () => {
+  const id = await trustedAgent('spend-03', '0xspend00000000000000000000000000000000003');
+  const grant = await req('POST', '/api/agents/' + id + '/permissions', {
+    category: 'compute',
+    ceiling: 50,
+  });
+  const pid = grant.body.permission.id;
+
+  const bad = await req('POST', '/api/permissions/' + pid + '/spends', { amount: 0 });
+  assert.strictEqual(bad.status, 400);
+
+  const missing = await req('POST', '/api/permissions/does-not-exist/spends', {
+    amount: 5,
+  });
+  assert.strictEqual(missing.status, 404);
+});

@@ -15,6 +15,9 @@
  *   GET    /api/agents/:id/permissions        list permissions
  *   POST   /api/agents/:id/permissions        grant permission
  *   POST   /api/permissions/:pid/revoke       revoke permission
+ *   GET    /api/permissions/:pid/budget        remaining spend budget
+ *   GET    /api/permissions/:pid/spends        spend history
+ *   POST   /api/permissions/:pid/spends        authorize a spend (enforces ceiling)
  *   GET    /api/stats                          global statistics
  *   GET    /api/meta                           metadata (kinds, tiers)
  */
@@ -23,6 +26,7 @@ const express = require('express');
 const agentService = require('../services/agentService');
 const attestationService = require('../services/attestationService');
 const permissionService = require('../services/permissionService');
+const spendService = require('../services/spendService');
 const issuerService = require('../services/issuerService');
 const verification = require('../services/verification');
 const replayGuard = require('../services/replayGuard');
@@ -409,6 +413,51 @@ router.post(
       throw err;
     }
     res.json({ permission });
+  })
+);
+
+// ---------------------------------------------------------------------------
+// Spends (enforce the permission ceiling per rolling period)
+// ---------------------------------------------------------------------------
+router.get(
+  '/permissions/:pid/budget',
+  wrap(async (req, res) => {
+    const budget = await spendService.budgetSummary(req.params.pid);
+    if (!budget) {
+      const err = new Error('Permission not found');
+      err.status = 404;
+      throw err;
+    }
+    res.json({ budget });
+  })
+);
+
+router.get(
+  '/permissions/:pid/spends',
+  wrap(async (req, res) => {
+    const budget = await spendService.budgetSummary(req.params.pid);
+    if (!budget) {
+      const err = new Error('Permission not found');
+      err.status = 404;
+      throw err;
+    }
+    res.json({
+      spends: await spendService.listSpends(req.params.pid, {
+        limit: parseInt(req.query.limit, 10) || 50,
+      }),
+    });
+  })
+);
+
+router.post(
+  '/permissions/:pid/spends',
+  wrap(async (req, res) => {
+    requireFields(req.body, ['amount']);
+    const result = await spendService.authorizeSpend(req.params.pid, {
+      amount: req.body.amount,
+      note: req.body.note,
+    });
+    res.status(201).json(result);
   })
 );
 
