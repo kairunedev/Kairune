@@ -238,9 +238,11 @@ function renderPermList(perms, agentId) {
         '<div class="budget-bar"><i style="width:0%"></i></div>' +
         '<div class="budget-line"><span class="budget-txt">loading budget…</span>' +
         '<form class="spend-form"><input type="number" min="0.01" step="0.01" ' +
-        'placeholder="amount" class="spend-amt" /><button type="submit" class="mini-spend">spend</button></form></div>';
+        'placeholder="amount" class="spend-amt" /><button type="submit" class="mini-spend">spend</button></form></div>' +
+        '<div class="spend-log" hidden></div>';
       item.appendChild(budget);
       loadPermBudget(p.id, budget);
+      loadSpendLog(p.id, budget);
       wireSpendForm(p.id, agentId, budget);
     }
     box.appendChild(item);
@@ -275,6 +277,35 @@ function paintBudget(container, b) {
 
 function round2(n) { return Math.round(Number(n) * 100) / 100; }
 
+// Fetch and render the recent spend history for a permission.
+async function loadSpendLog(permId, container) {
+  try {
+    const { spends } = await api('/permissions/' + permId + '/spends?limit=8');
+    renderSpendLog(container, spends);
+  } catch (_) { /* history is optional */ }
+}
+
+function renderSpendLog(container, spends) {
+  const box = container.querySelector('.spend-log');
+  if (!box) return;
+  if (!spends || !spends.length) { box.hidden = true; box.innerHTML = ''; return; }
+  box.hidden = false;
+  box.innerHTML = spends
+    .map((s) =>
+      '<div class="spend-row"><span class="spend-amount">−$' + round2(s.amount) + '</span>' +
+      '<span class="spend-note">' + (s.note ? escapeText(s.note) : 'spend') + '</span>' +
+      '<span class="spend-time">' + timeAgo(s.created_at) + '</span></div>'
+    )
+    .join('');
+}
+
+function escapeText(s) {
+  return String(s)
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;');
+}
+
 function wireSpendForm(permId, agentId, container) {
   const form = container.querySelector('.spend-form');
   if (!form) return;
@@ -293,6 +324,7 @@ function wireSpendForm(permId, agentId, container) {
       paintBudget(container, r.budget);
       input.value = '';
       loadStats();
+      loadSpendLog(permId, container);
       toast('spent $' + round2(amount) + ' · $' + round2(r.budget.remaining) + ' left', 'ok');
     } catch (err) {
       toast(err.message, 'err');

@@ -172,6 +172,12 @@ nav .conn.err i { background:var(--red); }
   background:none; border:1px solid var(--line-strong); border-radius:5px; padding:4px 10px; transition:all .15s ease; }
 .mini-spend:hover { border-color:var(--signal); }
 .mini-spend:disabled { opacity:.5; cursor:default; }
+.spend-log { margin-top:8px; display:flex; flex-direction:column; }
+.spend-row { display:grid; grid-template-columns:auto 1fr auto; gap:10px; align-items:center;
+  padding:5px 0; font-size:12px; border-top:1px solid var(--line); }
+.spend-amount { font-family:var(--mono); color:var(--red); }
+.spend-note { font-family:var(--mono); color:var(--text-2); overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+.spend-time { font-family:var(--mono); font-size:11px; color:var(--text-3); }
 
 /* modal */
 .modal-backdrop { position:fixed; inset:0; background:rgba(0,0,0,.6); backdrop-filter:blur(4px);

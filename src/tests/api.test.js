@@ -255,6 +255,25 @@ test('spend: authorize within ceiling, then reject over budget', async () => {
   assert.strictEqual(spends.body.spends[0].amount, 10);
 });
 
+test('spend: history lists accepted charges, most recent first', async () => {
+  const id = await trustedAgent('spend-05', '0xspend00000000000000000000000000000000005');
+  const grant = await req('POST', '/api/agents/' + id + '/permissions', {
+    category: 'compute',
+    ceiling: 50,
+  });
+  const pid = grant.body.permission.id;
+
+  await req('POST', '/api/permissions/' + pid + '/spends', { amount: 3, note: 'first' });
+  await req('POST', '/api/permissions/' + pid + '/spends', { amount: 4, note: 'second' });
+
+  const spends = await req('GET', '/api/permissions/' + pid + '/spends');
+  assert.strictEqual(spends.status, 200);
+  assert.strictEqual(spends.body.spends.length, 2);
+  // Rejected charges never appear in history.
+  const total = spends.body.spends.reduce((sum, s) => sum + s.amount, 0);
+  assert.strictEqual(total, 7);
+});
+
 test('spend: revoked permission cannot be charged → 409', async () => {
   const id = await trustedAgent('spend-02', '0xspend00000000000000000000000000000000002');
   const grant = await req('POST', '/api/agents/' + id + '/permissions', {
