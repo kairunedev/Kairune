@@ -100,6 +100,7 @@ router.get(
     const activePerms = (
       await one(`SELECT COUNT(*) c FROM permissions WHERE status = 'active'`)
     ).c;
+    const totalSpend = (await one(`SELECT COALESCE(SUM(amount), 0) s FROM spends`)).s;
     const avgScore = (await one(`SELECT AVG(score) a FROM agents`)).a || 0;
     const tierDist = (
       await db.execute(
@@ -112,6 +113,7 @@ router.get(
       active_agents: active,
       total_attestations: attestations,
       active_permissions: activePerms,
+      total_spend: Math.round((Number(totalSpend) || 0) * 100) / 100,
       avg_score: Math.round(avgScore),
       tier_distribution: tierDist,
     });

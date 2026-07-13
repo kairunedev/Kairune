@@ -284,3 +284,23 @@ test('spend: non-positive amount → 400, unknown permission → 404', async () 
   });
   assert.strictEqual(missing.status, 404);
 });
+
+test('stats: total_spend reflects authorized spends', async () => {
+  const id = await trustedAgent('spend-04', '0xspend00000000000000000000000000000000004');
+  const grant = await req('POST', '/api/agents/' + id + '/permissions', {
+    category: 'compute',
+    ceiling: 50,
+  });
+  const pid = grant.body.permission.id;
+
+  const before = await req('GET', '/api/stats');
+  assert.strictEqual(typeof before.body.total_spend, 'number');
+
+  await req('POST', '/api/permissions/' + pid + '/spends', { amount: 12.5 });
+
+  const after = await req('GET', '/api/stats');
+  assert.strictEqual(
+    Math.round((after.body.total_spend - before.body.total_spend) * 100) / 100,
+    12.5
+  );
+});

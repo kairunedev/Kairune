@@ -52,6 +52,8 @@ async function loadStats() {
   $('#stAgents').textContent = s.total_agents;
   $('#stAtt').textContent = s.total_attestations;
   $('#stPerms').textContent = s.active_permissions;
+  const spendEl = $('#stSpend');
+  if (spendEl) spendEl.textContent = '$' + (s.total_spend != null ? s.total_spend : 0);
   $('#stAvg').textContent = s.avg_score;
 }
 
@@ -208,6 +210,7 @@ function renderPermList(perms, agentId) {
   box.innerHTML = '';
   if (!perms.length) { box.appendChild(el('div', 'empty', 'no permissions granted')); return; }
   perms.forEach((p) => {
+    const item = el('div', 'perm-item');
     const row = el('div', 'perm-row');
     let inner = '<div class="perm-cat">' + p.category + '</div>';
     inner += '<div class="perm-meta">$' + p.ceiling + '/' + p.period + '</div>';
@@ -226,7 +229,76 @@ function renderPermList(perms, agentId) {
         loadStats();
       } catch (e) { toast(e.message, 'err'); }
     });
-    box.appendChild(row);
+    item.appendChild(row);
+
+    // Active permissions show a live budget bar + a quick spend control.
+    if (p.status === 'active') {
+      const budget = el('div', 'perm-budget');
+      budget.innerHTML =
+        '<div class="budget-bar"><i style="width:0%"></i></div>' +
+        '<div class="budget-line"><span class="budget-txt">loading budget…</span>' +
+        '<form class="spend-form"><input type="number" min="0.01" step="0.01" ' +
+        'placeholder="amount" class="spend-amt" /><button type="submit" class="mini-spend">spend</button></form></div>';
+      item.appendChild(budget);
+      loadPermBudget(p.id, budget);
+      wireSpendForm(p.id, agentId, budget);
+    }
+    box.appendChild(item);
+  });
+}
+
+// Fetch a permission's budget and paint the usage bar + text.
+async function loadPermBudget(permId, container) {
+  try {
+    const { budget } = await api('/permissions/' + permId + '/budget');
+    paintBudget(container, budget);
+  } catch (e) {
+    const txt = container.querySelector('.budget-txt');
+    if (txt) txt.textContent = 'budget unavailable';
+  }
+}
+
+function paintBudget(container, b) {
+  const pct = b.ceiling > 0 ? Math.min(100, (b.used / b.ceiling) * 100) : 0;
+  const bar = container.querySelector('.budget-bar i');
+  if (bar) {
+    bar.style.width = pct.toFixed(1) + '%';
+    bar.className = pct >= 100 ? 'full' : pct >= 80 ? 'warn' : '';
+  }
+  const txt = container.querySelector('.budget-txt');
+  if (txt) {
+    txt.textContent =
+      '$' + round2(b.used) + ' / $' + round2(b.ceiling) + ' used · $' +
+      round2(b.remaining) + ' left this ' + b.period;
+  }
+}
+
+function round2(n) { return Math.round(Number(n) * 100) / 100; }
+
+function wireSpendForm(permId, agentId, container) {
+  const form = container.querySelector('.spend-form');
+  if (!form) return;
+  form.addEventListener('submit', async (e) => {
+    e.preventDefault();
+    const input = form.querySelector('.spend-amt');
+    const btn = form.querySelector('.mini-spend');
+    const amount = Number(input.value);
+    if (!amount || amount <= 0) { toast('enter a positive amount', 'err'); return; }
+    btn.disabled = true;
+    try {
+      const r = await api('/permissions/' + permId + '/spends', {
+        method: 'POST',
+        body: JSON.stringify({ amount, note: 'console' }),
+      });
+      paintBudget(container, r.budget);
+      input.value = '';
+      loadStats();
+      toast('spent $' + round2(amount) + ' · $' + round2(r.budget.remaining) + ' left', 'ok');
+    } catch (err) {
+      toast(err.message, 'err');
+    } finally {
+      btn.disabled = false;
+    }
   });
 }
 
