@@ -22,8 +22,9 @@ function nowIso() {
 // Event names the platform can emit. '*' subscribes to all of them.
 const EVENTS = Object.freeze(['spend.approved', 'spend.blocked']);
 
-// Delivery tuning.
-const DELIVERY_TIMEOUT_MS = 4000;
+// Delivery tuning. Kept short: on serverless the spend request awaits delivery,
+// so a slow consumer must not stall the caller for long.
+const DELIVERY_TIMEOUT_MS = 2500;
 const MAX_DELIVERY_LOG = 200;
 
 /**

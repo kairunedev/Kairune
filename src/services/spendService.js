@@ -19,15 +19,20 @@ function nowIso() {
 }
 
 /**
- * Emit a spend event to registered webhooks without blocking the caller.
- * Failures are swallowed inside webhookService; the extra catch here guards
- * against an unexpected synchronous throw.
+ * Emit a spend event to registered webhooks.
+ *
+ * Awaited by the caller so deliveries complete before the request finishes —
+ * required on serverless (Vercel) where the process is frozen the moment the
+ * HTTP response is sent, which would otherwise drop fire-and-forget work.
+ * All failures are swallowed here, so notifications can never block or fail a
+ * spend; if no webhooks are registered the overhead is a single empty query.
  * @param {string} event
  * @param {object} data
+ * @returns {Promise<void>}
  */
-function emitSpendEvent(event, data) {
+async function emitSpendEvent(event, data) {
   try {
-    Promise.resolve(webhookService.emit(event, data)).catch(() => {});
+    await webhookService.emit(event, data);
   } catch {
     /* never let notifications affect spend authorization */
   }
@@ -140,7 +145,7 @@ async function authorizeSpend(permissionId, { amount, note = null }, opts = {}) 
       remaining: Math.max(0, remaining),
       period: permission.period,
     };
-    emitSpendEvent('spend.blocked', {
+    await emitSpendEvent('spend.blocked', {
       permission_id: permissionId,
       agent_id: permission.agent_id,
       requested: value,
@@ -175,7 +180,7 @@ async function authorizeSpend(permissionId, { amount, note = null }, opts = {}) 
     ],
   });
 
-  emitSpendEvent('spend.approved', {
+  await emitSpendEvent('spend.approved', {
     permission_id: permissionId,
     agent_id: permission.agent_id,
     spend_id: spend.id,
