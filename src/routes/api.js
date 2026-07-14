@@ -388,6 +388,7 @@ router.get(
 router.post(
   '/agents/:id/permissions',
   wrap(async (req, res) => {
+    requireAdmin(req);
     requireFields(req.body, ['category', 'ceiling']);
     const agent = await agentService.getAgent(req.params.id);
     if (!agent) {
@@ -408,6 +409,7 @@ router.post(
 router.post(
   '/permissions/:pid/revoke',
   wrap(async (req, res) => {
+    requireAdmin(req);
     const permission = await permissionService.revokePermission(req.params.pid);
     if (!permission) {
       const err = new Error('Active permission not found');
@@ -454,6 +456,7 @@ router.get(
 router.post(
   '/permissions/:pid/spends',
   wrap(async (req, res) => {
+    requireAdmin(req);
     requireFields(req.body, ['amount']);
     const result = await spendService.authorizeSpend(req.params.pid, {
       amount: req.body.amount,
