@@ -119,3 +119,38 @@ CREATE TABLE IF NOT EXISTS spends (
 
 CREATE INDEX IF NOT EXISTS idx_spends_permission ON spends(permission_id);
 CREATE INDEX IF NOT EXISTS idx_spends_agent ON spends(agent_id);
+
+-- ---------------------------------------------------------------------------
+-- webhooks: outbound HTTP endpoints notified when spend events happen
+-- ---------------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS webhooks (
+  id            TEXT PRIMARY KEY,              -- uuid
+  url           TEXT NOT NULL,                 -- https endpoint to POST events to
+  secret        TEXT NOT NULL,                 -- HMAC-SHA256 signing secret
+  events        TEXT NOT NULL DEFAULT '*',     -- CSV of event names, or '*' for all
+  status        TEXT NOT NULL DEFAULT 'active' -- active | disabled
+                  CHECK (status IN ('active', 'disabled')),
+  created_at    TEXT NOT NULL,
+  last_status   INTEGER,                       -- last HTTP status seen (or null)
+  last_error    TEXT,                          -- last delivery error (or null)
+  last_at       TEXT                           -- last delivery attempt timestamp
+);
+
+CREATE INDEX IF NOT EXISTS idx_webhooks_status ON webhooks(status);
+
+-- ---------------------------------------------------------------------------
+-- webhook_deliveries: append-only log of each delivery attempt (audit trail)
+-- ---------------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS webhook_deliveries (
+  id            TEXT PRIMARY KEY,              -- uuid
+  webhook_id    TEXT NOT NULL,
+  event         TEXT NOT NULL,                 -- event name, e.g. spend.blocked
+  payload       TEXT NOT NULL,                 -- JSON body sent
+  status_code   INTEGER,                       -- HTTP status returned (or null)
+  ok            INTEGER NOT NULL DEFAULT 0,    -- 1 if delivered (2xx), else 0
+  error         TEXT,                          -- error message if failed
+  created_at    TEXT NOT NULL,
+  FOREIGN KEY (webhook_id) REFERENCES webhooks(id) ON DELETE CASCADE
+);
+
+CREATE INDEX IF NOT EXISTS idx_webhook_deliveries_hook ON webhook_deliveries(webhook_id);

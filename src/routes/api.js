@@ -18,6 +18,10 @@
  *   GET    /api/permissions/:pid/budget        remaining spend budget
  *   GET    /api/permissions/:pid/spends        spend history
  *   POST   /api/permissions/:pid/spends        authorize a spend (enforces ceiling)
+ *   POST   /api/webhooks                        register a spend-event webhook
+ *   GET    /api/webhooks                        list webhooks
+ *   GET    /api/webhooks/:id/deliveries         webhook delivery log
+ *   DELETE /api/webhooks/:id                     delete a webhook
  *   GET    /api/stats                          global statistics
  *   GET    /api/meta                           metadata (kinds, tiers)
  */
@@ -28,6 +32,7 @@ const attestationService = require('../services/attestationService');
 const permissionService = require('../services/permissionService');
 const spendService = require('../services/spendService');
 const issuerService = require('../services/issuerService');
+const webhookService = require('../services/webhookService');
 const verification = require('../services/verification');
 const replayGuard = require('../services/replayGuard');
 const trustScore = require('../services/trustScore');
@@ -463,6 +468,58 @@ router.post(
       note: req.body.note,
     });
     res.status(201).json(result);
+  })
+);
+
+// ---------------------------------------------------------------------------
+// Webhooks (outbound spend event notifications) — admin-guarded
+// ---------------------------------------------------------------------------
+router.post(
+  '/webhooks',
+  wrap(async (req, res) => {
+    requireAdmin(req);
+    requireFields(req.body, ['url']);
+    const { webhook, secret } = await webhookService.createWebhook({
+      url: req.body.url,
+      events: req.body.events,
+      secret: req.body.secret,
+    });
+    // secret returned exactly once, here.
+    res.status(201).json({ webhook, secret });
+  })
+);
+
+router.get(
+  '/webhooks',
+  wrap(async (req, res) => {
+    requireAdmin(req);
+    res.json({ webhooks: await webhookService.listWebhooks() });
+  })
+);
+
+router.get(
+  '/webhooks/:id/deliveries',
+  wrap(async (req, res) => {
+    requireAdmin(req);
+    res.json({
+      deliveries: await webhookService.listDeliveries(req.params.id, {
+        limit: parseInt(req.query.limit, 10) || 50,
+      }),
+    });
+  })
+);
+
+router.delete(
+  '/webhooks/:id',
+  wrap(async (req, res) => {
+    requireAdmin(req);
+    const removed = await webhookService.deleteWebhook(req.params.id);
+    if (!removed) {
+      const err = new Error('Webhook not found');
+      err.status = 404;
+      throw err;
+    }
+    res.json({ deleted: true });
   })
 );
 
