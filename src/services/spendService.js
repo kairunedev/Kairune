@@ -12,9 +12,25 @@
 const crypto = require('crypto');
 const { getDb } = require('../db');
 const agentService = require('./agentService');
+const webhookService = require('./webhookService');
 
 function nowIso() {
   return new Date().toISOString();
+}
+
+/**
+ * Emit a spend event to registered webhooks without blocking the caller.
+ * Failures are swallowed inside webhookService; the extra catch here guards
+ * against an unexpected synchronous throw.
+ * @param {string} event
+ * @param {object} data
+ */
+function emitSpendEvent(event, data) {
+  try {
+    Promise.resolve(webhookService.emit(event, data)).catch(() => {});
+  } catch {
+    /* never let notifications affect spend authorization */
+  }
 }
 
 // Rolling window length (ms) for each permission period.
@@ -124,6 +140,16 @@ async function authorizeSpend(permissionId, { amount, note = null }, opts = {}) 
       remaining: Math.max(0, remaining),
       period: permission.period,
     };
+    emitSpendEvent('spend.blocked', {
+      permission_id: permissionId,
+      agent_id: permission.agent_id,
+      requested: value,
+      ceiling,
+      used,
+      remaining: Math.max(0, remaining),
+      period: permission.period,
+      reason: 'ceiling_exceeded',
+    });
     throw err;
   }
 
@@ -147,6 +173,17 @@ async function authorizeSpend(permissionId, { amount, note = null }, opts = {}) 
       spend.note,
       spend.created_at,
     ],
+  });
+
+  emitSpendEvent('spend.approved', {
+    permission_id: permissionId,
+    agent_id: permission.agent_id,
+    spend_id: spend.id,
+    amount: value,
+    ceiling,
+    used: used + value,
+    remaining: remaining - value,
+    period: permission.period,
   });
 
   return {
