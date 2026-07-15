@@ -90,6 +90,32 @@
   </div>
 </header>
 
+<section id="live" class="live-feed-section">
+  <div class="wrap">
+    <div class="head-row">
+      <div>
+        <span class="tag">live enforcement</span>
+        <h2 class="reveal">Every spend decision, as it happens.</h2>
+      </div>
+      <span class="feed-status reveal" id="feedStatus"><i></i> live</span>
+    </div>
+    <p class="section-sub reveal">This is not a mockup. Each row is a real authorization the enforcement layer approved or blocked against an agent's scoped ceiling — streamed straight from the API.</p>
+    <div class="feed-panel reveal">
+      <div class="feed-head">
+        <span>spend_events.live</span>
+        <span class="feed-legend"><i class="ok"></i> approved <i class="blk"></i> blocked</span>
+      </div>
+      <ul class="feed-list" id="feedList" aria-live="polite">
+        <li class="feed-empty">waiting for activity…</li>
+      </ul>
+      <div class="feed-foot">
+        <a href="/app">open the console →</a>
+        <code>GET /api/feed</code>
+      </div>
+    </div>
+  </div>
+</section>
+
 <section id="problem">
   <div class="wrap">
     <div class="head-row">

@@ -154,3 +154,24 @@ CREATE TABLE IF NOT EXISTS webhook_deliveries (
 );
 
 CREATE INDEX IF NOT EXISTS idx_webhook_deliveries_hook ON webhook_deliveries(webhook_id);
+
+-- ---------------------------------------------------------------------------
+-- spend_events: public activity log of every spend decision (approved/blocked)
+-- Powers the live feed on the landing page. Append-only, no PII, safe to read
+-- without auth. Blocked spends are NOT recorded in `spends`, so this table is
+-- the single source of truth for "what did the enforcement layer decide?".
+-- ---------------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS spend_events (
+  id            TEXT PRIMARY KEY,              -- uuid
+  event         TEXT NOT NULL                  -- spend.approved | spend.blocked
+                  CHECK (event IN ('spend.approved', 'spend.blocked')),
+  agent_id      TEXT,                          -- agent that attempted the spend
+  agent_handle  TEXT,                          -- denormalised handle for display
+  amount        REAL NOT NULL DEFAULT 0,       -- requested / approved amount
+  ceiling       REAL,                          -- permission ceiling at the time
+  period        TEXT,                          -- day | week | month
+  reason        TEXT,                          -- e.g. ceiling_exceeded (blocked)
+  created_at    TEXT NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_spend_events_created ON spend_events(created_at);

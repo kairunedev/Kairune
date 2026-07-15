@@ -38,6 +38,40 @@ async function emitSpendEvent(event, data) {
   }
 }
 
+/**
+ * Append a spend decision to the public activity log (spend_events).
+ *
+ * This powers the landing-page live feed. It is best-effort: any failure is
+ * swallowed so logging can never block or fail a spend authorization. No PII
+ * is stored — only the agent handle, amount, ceiling, and decision.
+ * @param {'spend.approved'|'spend.blocked'} event
+ * @param {{agent_id?:string, agent_handle?:string, amount:number, ceiling?:number, period?:string, reason?:string, createdAt?:string}} data
+ * @returns {Promise<void>}
+ */
+async function recordEvent(event, data) {
+  try {
+    const db = await getDb();
+    await db.execute({
+      sql: `INSERT INTO spend_events
+              (id, event, agent_id, agent_handle, amount, ceiling, period, reason, created_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      args: [
+        crypto.randomUUID(),
+        event,
+        data.agent_id ?? null,
+        data.agent_handle ?? null,
+        Number(data.amount) || 0,
+        data.ceiling ?? null,
+        data.period ?? null,
+        data.reason ?? null,
+        data.createdAt || nowIso(),
+      ],
+    });
+  } catch {
+    /* never let activity logging affect spend authorization */
+  }
+}
+
 // Rolling window length (ms) for each permission period.
 const PERIOD_MS = Object.freeze({
   day: 86_400_000,
@@ -155,6 +189,14 @@ async function authorizeSpend(permissionId, { amount, note = null }, opts = {}) 
       period: permission.period,
       reason: 'ceiling_exceeded',
     });
+    await recordEvent('spend.blocked', {
+      agent_id: permission.agent_id,
+      agent_handle: agent.handle,
+      amount: value,
+      ceiling,
+      period: permission.period,
+      reason: 'ceiling_exceeded',
+    });
     throw err;
   }
 
@@ -189,6 +231,14 @@ async function authorizeSpend(permissionId, { amount, note = null }, opts = {}) 
     used: used + value,
     remaining: remaining - value,
     period: permission.period,
+  });
+  await recordEvent('spend.approved', {
+    agent_id: permission.agent_id,
+    agent_handle: agent.handle,
+    amount: value,
+    ceiling,
+    period: permission.period,
+    createdAt: spend.created_at,
   });
 
   return {
@@ -247,10 +297,29 @@ async function listSpends(permissionId, { limit = 50 } = {}) {
   return res.rows;
 }
 
+/**
+ * Public activity feed: recent spend decisions (approved + blocked) across all
+ * agents. Read-only, no auth, no PII — safe to expose on the landing page.
+ * @param {{limit?:number}} [opts]
+ * @returns {Promise<object[]>}
+ */
+async function listFeed({ limit = 20 } = {}) {
+  const db = await getDb();
+  const res = await db.execute({
+    sql: `SELECT event, agent_handle, amount, ceiling, period, reason, created_at
+          FROM spend_events
+          ORDER BY created_at DESC LIMIT ?`,
+    args: [Math.min(Math.max(1, limit), 100)],
+  });
+  return res.rows;
+}
+
 module.exports = {
   authorizeSpend,
   budgetSummary,
   listSpends,
+  listFeed,
+  recordEvent,
   usedInWindow,
   windowStart,
   PERIOD_MS,

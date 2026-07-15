@@ -23,6 +23,7 @@
  *   GET    /api/webhooks/:id/deliveries         webhook delivery log
  *   DELETE /api/webhooks/:id                     delete a webhook
  *   GET    /api/stats                          global statistics
+ *   GET    /api/feed                           public spend activity feed
  *   GET    /api/meta                           metadata (kinds, tiers)
  */
 
@@ -122,6 +123,16 @@ router.get(
       avg_score: Math.round(avgScore),
       tier_distribution: tierDist,
     });
+  })
+);
+
+// Public spend activity feed — real approved/blocked decisions, no auth, no PII.
+// Powers the live feed on the landing page.
+router.get(
+  '/feed',
+  wrap(async (req, res) => {
+    const limit = Math.min(parseInt(req.query.limit, 10) || 20, 100);
+    res.json({ events: await spendService.listFeed({ limit }) });
   })
 );
 

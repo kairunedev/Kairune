@@ -70,6 +70,73 @@ if (track) {
   if (reduced) track.style.animation = 'none';
 }
 
+// live spend-decision feed (real data from /api/feed)
+(function liveFeed() {
+  const list = document.getElementById('feedList');
+  const statusEl = document.getElementById('feedStatus');
+  if (!list) return;
+
+  const money = (n) => {
+    const v = Number(n) || 0;
+    return '$' + v.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+  };
+  const ago = (iso) => {
+    const s = Math.max(0, (Date.now() - new Date(iso).getTime()) / 1000);
+    if (s < 60) return Math.floor(s) + 's ago';
+    if (s < 3600) return Math.floor(s / 60) + 'm ago';
+    if (s < 86400) return Math.floor(s / 3600) + 'h ago';
+    return Math.floor(s / 86400) + 'd ago';
+  };
+  const esc = (t) => String(t == null ? '' : t).replace(/[&<>"]/g, (c) =>
+    ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
+
+  const row = (e) => {
+    const blocked = e.event === 'spend.blocked';
+    const handle = esc(e.agent_handle || 'agent');
+    const period = esc(e.period || 'day');
+    const verb = blocked ? 'blocked' : 'approved';
+    const detail = blocked
+      ? `over ${money(e.ceiling)}/${period} ceiling`
+      : `within ${money(e.ceiling)}/${period} ceiling`;
+    return `<li class="feed-row ${blocked ? 'blk' : 'ok'}">
+      <span class="fr-dot"></span>
+      <span class="fr-agent">${handle}</span>
+      <span class="fr-amt">${money(e.amount)}</span>
+      <span class="fr-verb">${verb}</span>
+      <span class="fr-detail">${detail}</span>
+      <span class="fr-time">${ago(e.created_at)}</span>
+    </li>`;
+  };
+
+  let lastKey = '';
+  async function tick() {
+    try {
+      const r = await fetch('/api/feed?limit=12', { cache: 'no-store' });
+      if (!r.ok) throw new Error('bad status');
+      const { events = [] } = await r.json();
+      if (statusEl) statusEl.classList.remove('down');
+      if (!events.length) {
+        list.innerHTML = '<li class="feed-empty">no spend activity yet — try the demo loop in the console.</li>';
+        return;
+      }
+      const key = events.map((e) => (e.created_at || '') + e.amount).join('|');
+      if (key === lastKey) return; // no change, skip re-render
+      lastKey = key;
+      list.innerHTML = events.map(row).join('');
+      const first = list.querySelector('.feed-row');
+      if (first && !reduced) {
+        first.classList.add('fr-new');
+        setTimeout(() => first.classList.remove('fr-new'), 1200);
+      }
+    } catch (_) {
+      if (statusEl) statusEl.classList.add('down');
+    }
+  }
+
+  tick();
+  setInterval(tick, 5000);
+})();
+
 // kinetic marquee band
 const marquee = document.getElementById('marqueeTrack');
 if (marquee) {
