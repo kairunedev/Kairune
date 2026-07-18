@@ -82,12 +82,19 @@ async function getAgentByWallet(wallet) {
  */
 async function listAgents({ limit = 50, offset = 0, status, includeDemo = false } = {}) {
   const db = await getDb();
+  // Hide demo/test/junk agents from the public leaderboard. Data stays in the
+  // DB (nothing is deleted) — it just never surfaces on the public list.
   const demoFilter = includeDemo
     ? ''
     : ` AND NOT (
          lower(handle) LIKE 'demo-%'
          OR lower(handle) LIKE 'try-%'
-         OR lower(COALESCE(operator,'')) IN ('demo-loop','demo user')
+         OR lower(handle) LIKE 'sdk-test-%'
+         OR lower(handle) LIKE '%-test-%'
+         OR lower(handle) LIKE 'dd-test%'
+         OR lower(COALESCE(operator,'')) IN ('demo-loop','demo user','dd check')
+         OR lower(COALESCE(wallet,'')) LIKE '0x00000000%'
+         OR lower(COALESCE(wallet,'')) NOT LIKE '0x%'
        )`;
   if (status) {
     const res = await db.execute({
