@@ -40,3 +40,6 @@ brand/**/*noxa*
 virtuals/UI_PASTE.txt
 virtuals/import-all.json
 token/README.md
+
+# AI IDE artifacts
+.kiro/

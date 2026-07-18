@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 /**
  * Kairune MCP — exposes the same capabilities as Virtuals ACP offerings
- * so Cursor / Claude can call kairune.online directly (no ACP escrow).
+ * so any MCP-compatible client can call kairune.online directly (no ACP escrow).
  *
  * Tools mirror Jobs Offered:
  *   lookup_trust_score, register_agent_on_kairune, record_attestation, full_trust_report
