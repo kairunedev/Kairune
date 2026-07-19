@@ -6,8 +6,8 @@
 <meta name="virtual-protocol-site-verification" content="7dbccd717353dca1ea036ebce2f12374" />
 <title>Kairune Console — live trust dashboard</title>
 <link rel="icon" href="/assets/img/logo-mark-solid.svg" type="image/svg+xml" />
-<link rel="stylesheet" href="/assets/css/styles.css?v=6" />
-<link rel="stylesheet" href="./console.css?v=6" />
+<link rel="stylesheet" href="/assets/css/styles.css?v=7" />
+<link rel="stylesheet" href="./console.css?v=7" />
 </head>
 <body class="console">
 
@@ -118,8 +118,14 @@
     </div>
     <form id="createForm">
       <label>handle <input name="handle" required placeholder="voyager-08" pattern="[a-zA-Z0-9\-_]+" title="Letters, numbers, hyphens, underscores only" /></label>
-      <label>wallet / identity <input name="wallet" required placeholder="0x… or any unique ID" minlength="6" /></label>
+      <label>identity <span class="opt">(optional — auto-generated)</span>
+        <span class="wallet-field">
+          <input name="wallet" placeholder="0x… or leave blank" minlength="6" autocomplete="off" spellcheck="false" />
+          <button type="button" class="btn btn-ghost btn-sm" id="genWallet" title="Generate a random identity">generate</button>
+        </span>
+      </label>
       <label>operator <input name="operator" placeholder="Team name (optional)" /></label>
+      <p class="cm-hint">No crypto wallet required. Leave identity blank and we'll assign one — you can register in one click.</p>
       <div class="form-err" id="createErr" hidden></div>
       <div class="modal-actions">
         <button type="button" class="btn btn-ghost" id="cancelCreate">Cancel</button>
@@ -131,6 +137,6 @@
 
 <div class="toast" id="toast" hidden></div>
 
-<script src="./console.js?v=6" defer></script>
+<script src="./console.js?v=7" defer></script>
 </body>
 </html>

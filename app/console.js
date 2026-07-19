@@ -382,10 +382,21 @@ function wireGrantForm(agent) {
 function openModal() { $('#createModal').hidden = false; $('#createErr').hidden = true; }
 function closeModal() { $('#createModal').hidden = true; $('#createForm').reset(); }
 
+function genIdentity() {
+  const rnd = (n) => Array.from(crypto.getRandomValues(new Uint8Array(n)))
+    .map((b) => b.toString(16).padStart(2, '0')).join('');
+  return '0x' + rnd(20);
+}
+
 function wireModal() {
   $('#openCreate').addEventListener('click', openModal);
   $('#closeCreate').addEventListener('click', closeModal);
   $('#cancelCreate').addEventListener('click', closeModal);
+  const genBtn = $('#genWallet');
+  if (genBtn) genBtn.addEventListener('click', () => {
+    const w = $('#createForm').elements.wallet;
+    w.value = genIdentity();
+  });
   $('#createModal').addEventListener('click', (e) => {
     if (e.target === $('#createModal')) closeModal();
   });
@@ -393,9 +404,10 @@ function wireModal() {
     e.preventDefault();
     const submitBtn = e.target.querySelector('button[type="submit"]');
     const fd = new FormData(e.target);
+    const walletInput = (fd.get('wallet') || '').trim();
     const payload = {
       handle: fd.get('handle').trim(),
-      wallet: fd.get('wallet').trim(),
+      wallet: walletInput || genIdentity(),
       operator: (fd.get('operator') || '').trim() || undefined,
     };
     submitBtn.disabled = true;
