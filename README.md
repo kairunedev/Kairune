@@ -1,8 +1,10 @@
 # Kairune
 
-**The trust layer for agents that spend.** — a working prototype: landing page + **live console dashboard** + **REST API** with a real trust score engine on top of SQLite.
+**Spending limits your AI agents actually earn.** — a working prototype: landing page + **live console dashboard** + **REST API** with a real trust score engine on top of SQLite.
 
-No longer a mockup — you can register an agent, record its behavior (attestation), watch the trust score recalculate in real time, then grant or revoke spending permission based on tier.
+No longer a mockup — you can register an agent, record its behavior (attestation), watch its spending ceiling recalculate in real time, then grant or revoke spending permission based on tier.
+
+> Note: agent trust/reputation is a crowded, fast-moving category with several teams exploring similar ideas. Kairune's specific focus is **spend authorization** — turning behavior into a concrete, revocable spending ceiling — not general-purpose reputation.
 
 ---
 
