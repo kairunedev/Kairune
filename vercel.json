@@ -4,7 +4,7 @@
   "functions": {
     "api/index.js": {
       "maxDuration": 15,
-      "includeFiles": "{docs/**,a/**,app/**,assets/**,index.html,src/**}"
+      "includeFiles": "{docs/**,a/**,app/**,assets/**,leaderboard/**,index.html,src/**}"
     }
   },
   "rewrites": [
@@ -14,6 +14,8 @@
     { "source": "/docs", "destination": "/api/index.js" },
     { "source": "/docs/(.*)", "destination": "/api/index.js" },
     { "source": "/a", "destination": "/api/index.js" },
-    { "source": "/a/(.*)", "destination": "/api/index.js" }
+    { "source": "/a/(.*)", "destination": "/api/index.js" },
+    { "source": "/leaderboard", "destination": "/api/index.js" },
+    { "source": "/leaderboard/(.*)", "destination": "/api/index.js" }
   ]
 }

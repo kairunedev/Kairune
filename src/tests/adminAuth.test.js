@@ -31,9 +31,18 @@ afterEach(() => {
   else process.env.NODE_ENV = prevNodeEnv;
 });
 
-test('stays open when ADMIN_KEY is unset (demo/dev default)', () => {
+test('fail-closed: refuses with 503 when ADMIN_KEY is unset in production', () => {
   delete process.env.ADMIN_KEY;
   process.env.NODE_ENV = 'production';
+  assert.throws(
+    () => requireAdmin(mockReq()),
+    (err) => err.status === 503
+  );
+});
+
+test('stays open when ADMIN_KEY is unset in dev (local convenience)', () => {
+  delete process.env.ADMIN_KEY;
+  process.env.NODE_ENV = 'development';
   assert.strictEqual(requireAdmin(mockReq()), true);
 });
 

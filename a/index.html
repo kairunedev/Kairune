@@ -4,13 +4,12 @@
 <meta charset="UTF-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1" />
 <meta name="virtual-protocol-site-verification" content="7dbccd717353dca1ea036ebce2f12374" />
-<meta name="twitter:card" content="summary_large_image" />
 <meta name="twitter:site" content="@usekairune" />
 <!--OG_META-->
 <title>Kairune — agent trust card</title>
 <link rel="icon" href="/assets/img/logo-mark-solid.svg" type="image/svg+xml" />
 <link rel="stylesheet" href="/assets/css/styles.css?v=6" />
-<link rel="stylesheet" href="/a/share.css?v=2" />
+<link rel="stylesheet" href="/a/share.css?v=3" />
 </head>
 <body class="share">
 
@@ -21,6 +20,7 @@
   <div class="wrap nav-row">
     <a class="logo" href="/"><img src="/assets/img/logo-mark.svg" width="26" height="26" alt="Kairune" />Kairune</a>
     <div class="nav-links">
+      <a href="/leaderboard">leaderboard</a>
       <a href="/app">console</a>
       <a href="/docs">api_docs</a>
       <a href="https://app.virtuals.io/virtuals/100623" target="_blank" rel="noopener noreferrer">virtuals</a>
@@ -55,10 +55,30 @@
     </div>
     <p class="trust-wallet" id="wallet">—</p>
     <div class="trust-actions">
-      <button type="button" class="btn btn-primary btn-sm" id="copyLink">copy share link</button>
+      <a class="btn btn-primary btn-sm" id="shareX" href="#" target="_blank" rel="noopener noreferrer">share on X</a>
+      <button type="button" class="btn btn-ghost btn-sm" id="copyLink">copy share link</button>
       <a class="btn btn-ghost btn-sm" id="openConsole" href="/app">open in console</a>
     </div>
+    <div class="trust-embed" id="embed" hidden>
+      <div class="trust-embed-head">
+        <span class="trust-embed-k">embed this badge</span>
+        <img class="trust-embed-preview" id="badgePreview" alt="trust badge preview" height="20" />
+      </div>
+      <div class="trust-embed-row">
+        <code class="trust-embed-code" id="embedCode">—</code>
+        <button type="button" class="btn btn-primary btn-sm" id="copyBadge">copy badge</button>
+      </div>
+      <div class="trust-embed-tabs">
+        <button type="button" class="trust-embed-tab is-active" data-fmt="md">Markdown</button>
+        <button type="button" class="trust-embed-tab" data-fmt="html">HTML</button>
+        <button type="button" class="trust-embed-tab" data-fmt="url">URL</button>
+      </div>
+    </div>
   </article>
+  <a class="share-cta" id="ownCard" href="/app" hidden>
+    <span>Run an agent that spends?</span>
+    <b>Get its trust card free →</b>
+  </a>
 </main>
 
 <script>
@@ -80,6 +100,8 @@
     }
     status.hidden = true;
     card.hidden = false;
+    var own = document.getElementById('ownCard');
+    if (own) own.hidden = false;
     document.title = a.handle + ' — Kairune trust card';
     document.getElementById('handle').textContent = a.handle;
     document.getElementById('score').textContent = a.score;
@@ -90,6 +112,13 @@
     document.getElementById('wallet').textContent = a.wallet;
     document.getElementById('openConsole').href = '/app/?agent=' + encodeURIComponent(a.handle);
     const shareUrl = location.origin + '/a/' + encodeURIComponent(a.handle);
+    const label = a.label || ('T' + a.tier);
+    const shareText =
+      '@' + a.handle + ' has a Kairune trust score of ' + a.score + '/1000 (' + label + ') — ' +
+      'a verifiable track record for AI agents that spend.\n\nCheck any agent\'s trust mark on @usekairune 👇';
+    const shareX = document.getElementById('shareX');
+    shareX.href = 'https://twitter.com/intent/tweet?text=' +
+      encodeURIComponent(shareText) + '&url=' + encodeURIComponent(shareUrl);
     document.getElementById('copyLink').addEventListener('click', async () => {
       try {
         await navigator.clipboard.writeText(shareUrl);
@@ -97,6 +126,41 @@
         setTimeout(() => { document.getElementById('copyLink').textContent = 'copy share link'; }, 1600);
       } catch (_) {}
     });
+
+    // --- embeddable trust badge ---
+    const badgeUrl = location.origin + '/a/' + encodeURIComponent(a.handle) + '/badge.svg';
+    const cardLink = shareUrl;
+    const snippets = {
+      md: '[![Kairune trust](' + badgeUrl + ')](' + cardLink + ')',
+      html: '<a href="' + cardLink + '"><img src="' + badgeUrl + '" alt="Kairune trust: ' + a.handle + '" height="20"></a>',
+      url: badgeUrl
+    };
+    let fmt = 'md';
+    const embed = document.getElementById('embed');
+    const embedCode = document.getElementById('embedCode');
+    const badgePreview = document.getElementById('badgePreview');
+    const copyBadge = document.getElementById('copyBadge');
+    if (embed) {
+      embed.hidden = false;
+      badgePreview.src = badgeUrl;
+      embedCode.textContent = snippets[fmt];
+      Array.prototype.forEach.call(document.querySelectorAll('.trust-embed-tab'), function (t) {
+        t.addEventListener('click', function () {
+          fmt = t.getAttribute('data-fmt');
+          embedCode.textContent = snippets[fmt];
+          Array.prototype.forEach.call(document.querySelectorAll('.trust-embed-tab'), function (o) {
+            o.classList.toggle('is-active', o === t);
+          });
+        });
+      });
+      copyBadge.addEventListener('click', async function () {
+        try {
+          await navigator.clipboard.writeText(snippets[fmt]);
+          copyBadge.textContent = 'copied ✓';
+          setTimeout(function () { copyBadge.textContent = 'copy badge'; }, 1600);
+        } catch (_) {}
+      });
+    }
   }
 
   if (window.__KAIRUNE_SHARE__ && window.__KAIRUNE_SHARE__.agent) {

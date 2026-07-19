@@ -28,6 +28,37 @@ body.share { padding-top: 0; }
 .trust-actions { display: flex; gap: 10px; flex-wrap: wrap; }
 .btn-sm { padding: 7px 13px; min-height: 34px; font-size: 12.5px; }
 
+/* embeddable badge block */
+.trust-embed { margin-top: 22px; padding-top: 20px; border-top: 1px solid var(--line); }
+.trust-embed-head { display: flex; align-items: center; gap: 12px; margin-bottom: 12px; }
+.trust-embed-k { font-family: var(--mono); font-size: 11px; color: var(--text-3); text-transform: uppercase; letter-spacing: .06em; }
+.trust-embed-preview { display: block; height: 20px; border-radius: 3px; margin-left: auto; }
+.trust-embed-row { display: flex; gap: 10px; align-items: stretch; }
+.trust-embed-code {
+  flex: 1; min-width: 0; font-family: var(--mono); font-size: 11.5px; line-height: 1.5; color: var(--text-2);
+  background: var(--ink); border: 1px solid var(--line); border-radius: var(--radius);
+  padding: 10px 12px; overflow-x: auto; white-space: nowrap; -webkit-overflow-scrolling: touch;
+}
+.trust-embed-row .btn-sm { flex-shrink: 0; }
+.trust-embed-tabs { display: flex; gap: 6px; margin-top: 10px; }
+.trust-embed-tab {
+  font-family: var(--mono); font-size: 11px; color: var(--text-3); cursor: pointer;
+  background: transparent; border: 1px solid var(--line); border-radius: 6px; padding: 4px 10px;
+  transition: color .15s ease, border-color .15s ease, background .15s ease;
+}
+.trust-embed-tab:hover { color: var(--text-2); border-color: var(--line-strong); }
+.trust-embed-tab.is-active { color: var(--signal); border-color: rgba(215,255,63,.4); background: rgba(215,255,63,.07); }
+
+.share-cta {
+  display: flex; align-items: center; justify-content: center; gap: 8px; flex-wrap: wrap;
+  margin: 18px auto 0; padding: 16px 20px; text-align: center;
+  border: 1px solid var(--line); border-radius: var(--radius-lg); background: var(--panel);
+  transition: border-color .2s ease, transform .2s ease;
+}
+.share-cta:hover { border-color: var(--line-strong); transform: translateY(-1px); }
+.share-cta span { font-family: var(--mono); font-size: 13px; color: var(--text-3); }
+.share-cta b { font-family: var(--mono); font-size: 13px; color: var(--signal); font-weight: 600; }
+
 .tierpill { font-family: var(--mono); font-size: 10.5px; padding: 3px 8px; border-radius: 5px; white-space: nowrap;
   border: 1px solid var(--line-strong); color: var(--text-2); }
 .tier-0{ color:var(--text-3); }

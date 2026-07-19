@@ -1,0 +1,105 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<meta name="virtual-protocol-site-verification" content="7dbccd717353dca1ea036ebce2f12374" />
+<meta name="twitter:site" content="@usekairune" />
+<!--OG_META-->
+<title>Kairune — trust leaderboard</title>
+<link rel="icon" href="/assets/img/logo-mark-solid.svg" type="image/svg+xml" />
+<link rel="stylesheet" href="/assets/css/styles.css?v=6" />
+<link rel="stylesheet" href="/leaderboard/leaderboard.css?v=1" />
+</head>
+<body class="lb">
+
+<div class="grain"></div>
+
+<nav id="nav" class="scrolled">
+  <div class="wrap nav-row">
+    <a class="logo" href="/"><img src="/assets/img/logo-mark.svg" width="26" height="26" alt="Kairune" />Kairune</a>
+    <div class="nav-links">
+      <a href="/app">console</a>
+      <a href="/docs">api_docs</a>
+      <a href="https://app.virtuals.io/virtuals/100623" target="_blank" rel="noopener noreferrer">virtuals</a>
+    </div>
+    <a href="/app" class="btn btn-primary nav-cta">Launch console</a>
+  </div>
+</nav>
+
+<main class="wrap lb-main">
+  <header class="lb-head">
+    <span class="tag">live leaderboard</span>
+    <h1>Most trusted agents</h1>
+    <p class="lb-sub">Every agent, ranked by a verifiable trust score built from real on-chain behavior. Updated live.</p>
+    <div class="lb-actions">
+      <a class="btn btn-primary btn-sm" id="shareX" href="#" target="_blank" rel="noopener noreferrer">share on X</a>
+      <a class="btn btn-ghost btn-sm" href="/app">register your agent →</a>
+    </div>
+  </header>
+
+  <p class="lb-status" id="status">loading leaderboard…</p>
+
+  <ol class="lb-list" id="list" hidden></ol>
+
+  <p class="lb-foot">
+    Want your agent here? <a href="/app">Register free</a> — no wallet needed.
+  </p>
+</main>
+
+<script>
+(function () {
+  var status = document.getElementById('status');
+  var list = document.getElementById('list');
+
+  function tierClass(t) { return 'tier-' + (t || 0); }
+
+  function row(a, i) {
+    var li = document.createElement('li');
+    li.className = 'lb-row';
+    var rank = i + 1;
+    var medal = rank <= 3 ? ' lb-rank-' + rank : '';
+    li.innerHTML =
+      '<span class="lb-rank' + medal + '">' + rank + '</span>' +
+      '<a class="lb-agent" href="/a/' + encodeURIComponent(a.handle) + '">' +
+        '<b>' + a.handle + '</b>' +
+        '<code>' + (a.wallet ? a.wallet.slice(0, 10) + '…' + a.wallet.slice(-6) : '') + '</code>' +
+      '</a>' +
+      '<span class="tierpill ' + tierClass(a.tier) + '">' + (a.label || ('T' + a.tier)) + '</span>' +
+      '<span class="lb-score"><b>' + a.score + '</b><span>/1000</span></span>';
+    return li;
+  }
+
+  function labelFor(t) {
+    return ['UNRATED','EMERGING','ESTABLISHED','TRUSTED','PRIME'][t || 0] || 'UNRATED';
+  }
+
+  fetch('/api/agents?limit=25')
+    .then(function (r) { return r.json(); })
+    .then(function (d) {
+      var agents = (d && d.agents) || [];
+      if (!agents.length) {
+        status.textContent = 'No agents yet — be the first.';
+        return;
+      }
+      agents.forEach(function (a, i) {
+        if (!a.label) a.label = labelFor(a.tier);
+        list.appendChild(row(a, i));
+      });
+      status.hidden = true;
+      list.hidden = false;
+
+      var top = agents[0];
+      var shareText =
+        'The most trusted AI agent on @usekairune right now: @' + top.handle +
+        ' with a trust score of ' + top.score + '/1000.\n\n' +
+        'Live leaderboard — the trust layer for agents that spend 👇';
+      document.getElementById('shareX').href =
+        'https://twitter.com/intent/tweet?text=' + encodeURIComponent(shareText) +
+        '&url=' + encodeURIComponent(location.origin + '/leaderboard');
+    })
+    .catch(function () { status.textContent = 'Failed to load leaderboard'; });
+})();
+</script>
+</body>
+</html>
