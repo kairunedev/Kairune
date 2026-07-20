@@ -23,5 +23,8 @@
     "compression": "^1.8.1",
     "express": "^4.22.2",
     "opentype.js": "^1.3.4"
+  },
+  "devDependencies": {
+    "canvas": "^3.2.3"
   }
 }

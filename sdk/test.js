@@ -1,29 +1,53 @@
 const { Kairune, KairuneError } = require('./dist/index.js');
 
 const adminKey = process.env.ADMIN_KEY || '';
-const k = new Kairune(); // read-only
 const PASS = '\u2705', FAIL = '\u274C';
 let pass = 0, fail = 0;
+let k; // read-only client, bound to the resolved target below
 
 function assert(name, cond, detail) {
   if (cond) { pass++; console.log(PASS, name); }
   else { fail++; console.log(FAIL, name, detail || ''); }
 }
 
+// Resolve the test target.
+//  - Default: boot an ephemeral in-process server on an in-memory DB, so the
+//    suite is hermetic — no network, and it never writes to production.
+//  - Set KAIRUNE_URL to run against an external target (e.g. a prod smoke test).
+async function resolveTarget() {
+  const external = process.env.KAIRUNE_URL;
+  if (external) {
+    const base = external.replace(/\/+$/, '');
+    // Skip cleanly if the external target is unreachable (offline / down).
+    try {
+      await fetch(base + '/api/stats', { signal: AbortSignal.timeout(4000) });
+    } catch {
+      console.log('# \u23ed  Skipping SDK integration tests (target unreachable): ' + base);
+      process.exit(0);
+    }
+    return { base, server: null };
+  }
+  // Ephemeral local server. Configure the DB BEFORE requiring the app so the
+  // db module resolves to the in-memory database on first use.
+  process.env.DB_PATH = ':memory:';
+  process.env.NODE_ENV = 'test';
+  const app = require('../server');
+  const { seed } = require('../src/db/seed');
+  await seed();
+  const server = await new Promise((resolve) => {
+    const s = app.listen(0, '127.0.0.1', () => resolve(s));
+  });
+  return { base: 'http://127.0.0.1:' + server.address().port, server };
+}
+
 (async () => {
+  const { base, server } = await resolveTarget();
+  k = new Kairune({ baseUrl: base });
+
   console.log('============================');
   console.log('@kairune/sdk v0.1.0 — FULL TEST');
-  console.log('target: https://kairune.online');
+  console.log('target: ' + base);
   console.log('============================\n');
-
-  // Integration tests need the live API. If it's unreachable (offline / CI
-  // sandbox), skip cleanly instead of failing the whole suite.
-  try {
-    await fetch('https://kairune.online/api/stats', { signal: AbortSignal.timeout(4000) });
-  } catch {
-    console.log('# \u23ed  Skipping SDK integration tests (target unreachable)');
-    process.exit(0);
-  }
 
   // --- READ ENDPOINTS ---
 
@@ -122,7 +146,7 @@ function assert(name, cond, detail) {
     assert('registerAgent() returns handle', created.handle === handle);
     // cleanup: delete with admin-key enabled client if available
     if (adminKey) {
-      const ak = new Kairune({ adminKey });
+      const ak = new Kairune({ adminKey, baseUrl: base });
       await ak.deleteAgent(created.id).catch(() => {});
     }
   } catch (e) {
@@ -139,7 +163,7 @@ function assert(name, cond, detail) {
 
   // --- WRITE ENDPOINTS (with admin key) ---
   if (process.env.ADMIN_KEY) {
-    const kw = new Kairune({ adminKey: process.env.ADMIN_KEY });
+    const kw = new Kairune({ adminKey: process.env.ADMIN_KEY, baseUrl: base });
     console.log('\n--- WRITE TESTS ---');
 
     try {
@@ -166,5 +190,6 @@ function assert(name, cond, detail) {
   console.log('\n============================');
   console.log(`RESULTS: ${pass} passed, ${fail} failed`);
   console.log('============================');
+  if (server) server.close();
   if (fail > 0) process.exit(1);
 })().catch(e => { console.error('FATAL:', e); process.exit(1); });
