@@ -8,6 +8,7 @@
  *   GET    /api/agents                       list agents (leaderboard)
  *   POST   /api/agents                       register a new agent
  *   GET    /api/agents/:id                    agent detail + score breakdown
+ *   GET    /api/agents/:id/trust-sources      issuer-diversity of verified trust
  *   PATCH  /api/agents/:id/status             suspend / activate an agent
  *   DELETE /api/agents/:id                    delete an agent
  *   GET    /api/agents/:id/attestations       attestation history
@@ -38,6 +39,7 @@ const webhookService = require('../services/webhookService');
 const verification = require('../services/verification');
 const replayGuard = require('../services/replayGuard');
 const trustScore = require('../services/trustScore');
+const issuerDiversity = require('../services/issuerDiversity');
 const { getDb } = require('../db');
 const { rateLimit } = require('../middleware/rateLimit');
 const { requireIssuer } = require('../middleware/issuerAuth');
@@ -86,6 +88,8 @@ router.get('/meta', (req, res) => {
     signature_algorithm: 'ed25519',
     signature_max_age_seconds: replayGuard.maxAgeSeconds(),
     verify_endpoint: '/api/verify',
+    trust_sources_endpoint: '/api/agents/:id/trust-sources',
+    diversity_target_issuers: issuerDiversity.DIVERSITY_TARGET_ISSUERS,
   });
 });
 
@@ -265,6 +269,52 @@ router.get(
       permissionService.listPermissions(base.id),
     ]);
     res.json({ agent, attestations, permissions });
+  })
+);
+
+// Issuer diversity — where does this agent's *verified* trust come from?
+//
+// A trusted tier built on a single issuer is a collusion / self-dealing risk;
+// the same tier backed by several independent issuers is far harder to fake.
+// This endpoint makes the source of trust transparent and measurable.
+// Public, no auth, deterministic (re-computable from the raw attestations).
+router.get(
+  '/agents/:id/trust-sources',
+  wrap(async (req, res) => {
+    const agent = await agentService.getAgent(req.params.id);
+    if (!agent) {
+      const err = new Error('Agent not found');
+      err.status = 404;
+      throw err;
+    }
+    const sources = await attestationService.listVerificationSources(agent.id);
+    const diversity = issuerDiversity.computeDiversity(sources);
+
+    // Attach issuer display names to the per-issuer breakdown for readability.
+    const nameById = new Map(
+      sources
+        .filter((s) => s.issuer_id)
+        .map((s) => [s.issuer_id, s.issuer_name])
+    );
+    const per_issuer = diversity.per_issuer.map((p) => ({
+      issuer_id: p.issuer_id,
+      issuer_name: nameById.get(p.issuer_id) || null,
+      verified_count: p.verified_count,
+      share: p.share,
+    }));
+
+    res.json({
+      agent_id: agent.id,
+      handle: agent.handle,
+      verified_count: diversity.verified_count,
+      unverified_count: diversity.unverified_count,
+      distinct_issuers: diversity.distinct_issuers,
+      top_issuer_share: diversity.top_issuer_share,
+      diversity_index: diversity.diversity_index,
+      confidence: diversity.confidence,
+      target_issuers: issuerDiversity.DIVERSITY_TARGET_ISSUERS,
+      per_issuer,
+    });
   })
 );
 

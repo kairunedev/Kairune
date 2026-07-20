@@ -377,3 +377,117 @@ test('POST /api/verify requires public_key, signature and fields', async () => {
   const missingFields = await req('POST', '/api/verify', { public_key: 'x', signature: 'AAAA' });
   assert.strictEqual(missingFields.status, 400);
 });
+
+// ---------------------------------------------------------------------------
+// Issuer diversity: GET /api/agents/:id/trust-sources
+// ---------------------------------------------------------------------------
+
+// Create an issuer with a signing key. Returns a submit() that posts a
+// verified attestation from THIS issuer to any agent (so a single issuer can
+// vouch multiple times).
+async function makeSigningIssuer(issuerName) {
+  const { id: issuerId, apiKey } = await registerIssuer(issuerName);
+  const { pem, privateKey } = keypair();
+  const keyRes = await req(
+    'POST',
+    `/api/issuers/${issuerId}/keys`,
+    { public_key: pem },
+    { 'X-Issuer-Key': apiKey }
+  );
+  const keyId = keyRes.body.key.id;
+
+  async function submit(agentId, kind = 'clean_payment') {
+    const issued_at = new Date().toISOString();
+    const fields = {
+      agent_id: agentId,
+      kind,
+      amount: 0,
+      note: null,
+      issuer_id: issuerId,
+      issuer_key_id: keyId,
+      issued_at,
+    };
+    const signature = crypto
+      .sign(null, Buffer.from(canonicalPayload(fields)), privateKey)
+      .toString('base64');
+    const r = await req(
+      'POST',
+      `/api/agents/${agentId}/attestations`,
+      { kind, issuer_id: issuerId, issuer_key_id: keyId, signature, issued_at },
+      { 'X-Issuer-Key': apiKey }
+    );
+    assert.strictEqual(r.status, 201);
+    return r;
+  }
+
+  return { issuerId, submit };
+}
+
+// Convenience: one verified attestation from a brand-new issuer.
+async function verifiedFromIssuer(agentId, issuerName, kind = 'clean_payment') {
+  const iss = await makeSigningIssuer(issuerName);
+  await iss.submit(agentId, kind);
+  return iss.issuerId;
+}
+
+test('trust-sources: self-posted (unverified) attestations give zero diversity', async () => {
+  const agentId = await newAgent('div-selffarm');
+  // Post many unsigned attestations — the "farm your own tier" attempt.
+  for (let i = 0; i < 8; i++) {
+    await req('POST', `/api/agents/${agentId}/attestations`, { kind: 'task_completed' });
+  }
+  const r = await req('GET', `/api/agents/${agentId}/trust-sources`);
+  assert.strictEqual(r.status, 200);
+  assert.strictEqual(r.body.distinct_issuers, 0);
+  assert.strictEqual(r.body.verified_count, 0);
+  assert.strictEqual(r.body.confidence, 0);
+  assert.ok(r.body.unverified_count >= 8);
+});
+
+test('trust-sources: a single issuer vouching many times still caps confidence at 0', async () => {
+  const agentId = await newAgent('div-single');
+  // One issuer, THREE verified attestations for the same agent.
+  const iss = await makeSigningIssuer('div-mono');
+  await iss.submit(agentId, 'clean_payment');
+  await iss.submit(agentId, 'task_completed');
+  await iss.submit(agentId, 'peer_vouch');
+
+  const r = await req('GET', `/api/agents/${agentId}/trust-sources`);
+  assert.strictEqual(r.status, 200);
+  assert.strictEqual(r.body.distinct_issuers, 1);
+  assert.strictEqual(r.body.verified_count, 3);
+  assert.strictEqual(r.body.top_issuer_share, 1);
+  // A single source = no independence, so diversity + confidence are zero
+  // even though the agent has several verified attestations.
+  assert.strictEqual(r.body.diversity_index, 0);
+  assert.strictEqual(r.body.confidence, 0);
+});
+
+test('trust-sources: multiple independent issuers raise confidence and diversity', async () => {
+  const concentrated = await newAgent('div-concentrated');
+  const diverse = await newAgent('div-diverse');
+
+  // Concentrated: 1 issuer.
+  await verifiedFromIssuer(concentrated, 'solo-issuer', 'clean_payment');
+
+  // Diverse: 4 different issuers.
+  await verifiedFromIssuer(diverse, 'iss-alpha', 'clean_payment');
+  await verifiedFromIssuer(diverse, 'iss-beta', 'clean_payment');
+  await verifiedFromIssuer(diverse, 'iss-gamma', 'clean_payment');
+  await verifiedFromIssuer(diverse, 'iss-delta', 'clean_payment');
+
+  const c = await req('GET', `/api/agents/${concentrated}/trust-sources`);
+  const d = await req('GET', `/api/agents/${diverse}/trust-sources`);
+
+  assert.strictEqual(c.body.distinct_issuers, 1);
+  assert.strictEqual(d.body.distinct_issuers, 4);
+  assert.ok(
+    d.body.confidence > c.body.confidence,
+    'more independent issuers must yield higher confidence'
+  );
+  assert.ok(
+    d.body.diversity_index > c.body.diversity_index,
+    'spread across issuers must yield higher diversity index'
+  );
+  assert.ok(d.body.top_issuer_share <= 0.5, 'no single issuer should dominate the diverse agent');
+});

@@ -120,4 +120,33 @@ async function listAttestations(agentId, { limit = 50 } = {}) {
   });
 }
 
-module.exports = { addAttestation, listAttestations, VALID_KINDS };
+/**
+ * Return the minimal rows needed to measure issuer diversity for an agent:
+ * verification status plus the (verified-only) issuer id and display name.
+ * Never exposes signatures or key material.
+ * @param {string} agentId
+ * @returns {Promise<Array<{verification_status:string, issuer_id:string|null, issuer_name:string|null}>>}
+ */
+async function listVerificationSources(agentId) {
+  const db = await getDb();
+  const res = await db.execute({
+    sql: `SELECT a.verification_status, a.issuer_id, i.display_name AS issuer_name
+          FROM attestations a
+          LEFT JOIN issuers i ON i.id = a.issuer_id
+          WHERE a.agent_id = ?`,
+    args: [agentId],
+  });
+  return res.rows.map((r) => ({
+    verification_status:
+      r.verification_status === 'verified' ? 'verified' : 'unverified',
+    issuer_id: r.verification_status === 'verified' ? r.issuer_id : null,
+    issuer_name: r.verification_status === 'verified' ? r.issuer_name : null,
+  }));
+}
+
+module.exports = {
+  addAttestation,
+  listAttestations,
+  listVerificationSources,
+  VALID_KINDS,
+};
