@@ -25,6 +25,7 @@
  *   GET    /api/stats                          global statistics
  *   GET    /api/feed                           public spend activity feed
  *   GET    /api/meta                           metadata (kinds, tiers)
+ *   POST   /api/verify                          public, stateless Ed25519 signature check
  */
 
 const express = require('express');
@@ -84,6 +85,61 @@ router.get('/meta', (req, res) => {
     unverified_weight_factor: trustScore.resolveUnverifiedFactor(),
     signature_algorithm: 'ed25519',
     signature_max_age_seconds: replayGuard.maxAgeSeconds(),
+    verify_endpoint: '/api/verify',
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Public signature verification — stateless, no auth, no storage.
+//
+// Anyone can independently check that a signature over a set of attestation
+// fields is valid for a given Ed25519 public key. Kairune never has to be
+// trusted: paste the public key, the exact signed fields, and the signature,
+// and this endpoint recomputes the canonical payload and verifies the
+// signature locally. "Don't trust, verify."
+//
+//   POST /api/verify
+//   {
+//     "public_key": "-----BEGIN PUBLIC KEY-----\n...",  // SPKI PEM (Ed25519)
+//     "signature":  "<base64>",
+//     "fields": { agent_id, kind, amount?, note?, issuer_id, issuer_key_id, issued_at }
+//   }
+//
+// Response: { verified: bool, algorithm, canonical, reason }
+// ---------------------------------------------------------------------------
+router.post('/verify', (req, res) => {
+  const { public_key, signature, fields } = req.body || {};
+
+  if (typeof public_key !== 'string' || public_key.trim() === '') {
+    const err = new Error('Field "public_key" (SPKI PEM) is required');
+    err.status = 400;
+    throw err;
+  }
+  if (typeof signature !== 'string' || signature.trim() === '') {
+    const err = new Error('Field "signature" (base64) is required');
+    err.status = 400;
+    throw err;
+  }
+  if (fields === null || typeof fields !== 'object' || Array.isArray(fields)) {
+    const err = new Error('Field "fields" (object) is required');
+    err.status = 400;
+    throw err;
+  }
+
+  // Recompute the exact canonical bytes that would have been signed.
+  const canonical = verification.canonicalPayload(fields);
+  const verified = verification.verifySignature({
+    publicKeyPem: public_key,
+    canonical,
+    signatureB64: signature,
+  });
+
+  res.json({
+    verified,
+    algorithm: 'ed25519',
+    canonical,
+    signed_fields: verification.CANONICAL_FIELDS,
+    reason: verified ? 'ok' : 'signature_invalid',
   });
 });
 

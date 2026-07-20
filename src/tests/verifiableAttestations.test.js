@@ -315,3 +315,65 @@ test('reusing a signature is rejected as replay (409)', async () => {
   const second = await req('POST', `/api/agents/${agentId}/attestations`, body, { 'X-Issuer-Key': apiKey });
   assert.strictEqual(second.status, 409);
 });
+
+// ---------------------------------------------------------------------------
+// Public, stateless signature verification: POST /api/verify
+// ---------------------------------------------------------------------------
+test('POST /api/verify confirms a valid Ed25519 signature (no auth)', async () => {
+  const { pem, privateKey } = keypair();
+  const fields = {
+    agent_id: 'agent-x',
+    kind: 'clean_payment',
+    amount: 12.5,
+    note: 'demo',
+    issuer_id: 'iss-x',
+    issuer_key_id: 'key-x',
+    issued_at: '2026-07-20T10:00:00.000Z',
+  };
+  const signature = crypto
+    .sign(null, Buffer.from(canonicalPayload(fields)), privateKey)
+    .toString('base64');
+
+  const r = await req('POST', '/api/verify', { public_key: pem, signature, fields });
+  assert.strictEqual(r.status, 200);
+  assert.strictEqual(r.body.verified, true);
+  assert.strictEqual(r.body.algorithm, 'ed25519');
+  assert.strictEqual(r.body.reason, 'ok');
+  assert.strictEqual(r.body.canonical, canonicalPayload(fields));
+});
+
+test('POST /api/verify rejects a tampered field', async () => {
+  const { pem, privateKey } = keypair();
+  const fields = {
+    agent_id: 'agent-y',
+    kind: 'task_completed',
+    amount: 1,
+    issuer_id: 'iss-y',
+    issuer_key_id: 'key-y',
+    issued_at: '2026-07-20T10:00:00.000Z',
+  };
+  const signature = crypto
+    .sign(null, Buffer.from(canonicalPayload(fields)), privateKey)
+    .toString('base64');
+
+  // Same signature, but the amount was changed after signing.
+  const r = await req('POST', '/api/verify', {
+    public_key: pem,
+    signature,
+    fields: { ...fields, amount: 999 },
+  });
+  assert.strictEqual(r.status, 200);
+  assert.strictEqual(r.body.verified, false);
+  assert.strictEqual(r.body.reason, 'signature_invalid');
+});
+
+test('POST /api/verify requires public_key, signature and fields', async () => {
+  const missingKey = await req('POST', '/api/verify', { signature: 'AAAA', fields: {} });
+  assert.strictEqual(missingKey.status, 400);
+
+  const missingSig = await req('POST', '/api/verify', { public_key: 'x', fields: {} });
+  assert.strictEqual(missingSig.status, 400);
+
+  const missingFields = await req('POST', '/api/verify', { public_key: 'x', signature: 'AAAA' });
+  assert.strictEqual(missingFields.status, 400);
+});
