@@ -136,7 +136,7 @@ async function setAgentStatus(id, status) {
 async function recalcAgent(id) {
   const db = await getDb();
   const res = await db.execute({
-    sql: `SELECT kind, weight, created_at, verification_status FROM attestations WHERE agent_id = ?`,
+    sql: `SELECT kind, weight, created_at, verification_status, issuer_id FROM attestations WHERE agent_id = ?`,
     args: [id],
   });
 

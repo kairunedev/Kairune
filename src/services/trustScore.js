@@ -41,6 +41,16 @@ const BASELINE = 120; // neutral starting score for a new agent
 const HALF_LIFE_DAYS = 90; // events decay to half their weight every 90 days
 const DEFAULT_UNVERIFIED_FACTOR = 0.25; // unverified attestations count at 25%
 
+// Anti-farming volume cap. The volume bonus rewards consistent clean activity,
+// but that is exactly the lever an agent could farm by having one friendly
+// issuer vouch for it over and over. So each individual issuer's clean
+// attestations contribute to the volume bonus only up to this cap. A single
+// issuer vouching 1000× therefore counts the same as vouching this many times;
+// to grow the volume bonus further you need *breadth* across independent
+// issuers. At low volume the cap does not bite, so a legitimate first verified
+// attestation still outscores an unverified one.
+const PER_ISSUER_VOLUME_CAP = 25;
+
 /**
  * Resolve the unverified weight factor from an explicit option or the
  * UNVERIFIED_WEIGHT_FACTOR env var, falling back to the default when invalid.
@@ -66,6 +76,29 @@ function recencyFactor(createdAt, now) {
   if (!Number.isFinite(ageMs) || ageMs <= 0) return 1;
   const ageDays = ageMs / 86_400_000;
   return Math.pow(0.5, ageDays / HALF_LIFE_DAYS);
+}
+
+/**
+ * Effective clean-attestation count that feeds the volume bonus, after
+ * capping each issuer's contribution. Verified clean attestations from any
+ * one issuer count only up to PER_ISSUER_VOLUME_CAP; clean attestations with
+ * no issuer (unverified / legacy) are passed through uncapped so behavior for
+ * data without issuer attribution is unchanged.
+ *
+ * This is the anti-farming lever: a single issuer vouching thousands of times
+ * cannot inflate the volume bonus beyond the cap — growth requires breadth
+ * across independent issuers.
+ *
+ * @param {number} uncappedClean clean attestations with no issuer_id
+ * @param {Map<string, number>} cleanByIssuer issuer_id -> clean verified count
+ * @returns {number} effective clean count for the volume bonus
+ */
+function cappedVolumeCount(uncappedClean, cleanByIssuer) {
+  let total = uncappedClean;
+  for (const count of cleanByIssuer.values()) {
+    total += Math.min(count, PER_ISSUER_VOLUME_CAP);
+  }
+  return total;
 }
 
 /**
@@ -105,6 +138,11 @@ function computeScore(attestations, nowMs, opts = {}) {
   let unverifiedCount = 0;
   let excludedCount = 0;
   const counts = {};
+  // Track clean (positive) attestations per issuer so a single issuer cannot
+  // farm the volume bonus. Clean attestations without an issuer are counted
+  // uncapped (legacy / unverified behavior is preserved).
+  const cleanByIssuer = new Map();
+  let uncappedClean = 0;
 
   for (const att of attestations) {
     // Verification factor: verified counts fully, unverified is discounted,
@@ -134,13 +172,25 @@ function computeScore(attestations, nowMs, opts = {}) {
     if (decayed >= 0) {
       positive += decayed;
       cleanCount += 1;
+      // Attribute this clean event to its issuer for the per-issuer cap.
+      if (status === 'verified' && att.issuer_id) {
+        cleanByIssuer.set(
+          att.issuer_id,
+          (cleanByIssuer.get(att.issuer_id) || 0) + 1
+        );
+      } else {
+        uncappedClean += 1;
+      }
     } else {
       negative += decayed; // negatif
     }
   }
 
   // Volume bonus: rewards consistency, with diminishing returns via log.
-  const volumeBonus = cleanCount > 0 ? Math.log10(cleanCount + 1) * 60 : 0;
+  // Each issuer's clean attestations are capped so a single issuer cannot farm
+  // the bonus; growth beyond the cap requires breadth across issuers.
+  const effectiveClean = cappedVolumeCount(uncappedClean, cleanByIssuer);
+  const volumeBonus = effectiveClean > 0 ? Math.log10(effectiveClean + 1) * 60 : 0;
 
   // Negative penalty is amplified (asymmetric).
   const rawScore = BASELINE + positive + volumeBonus + negative * 1.15;
@@ -160,6 +210,8 @@ function computeScore(attestations, nowMs, opts = {}) {
       verifiedCount,
       unverifiedCount,
       excludedCount,
+      distinctIssuers: cleanByIssuer.size,
+      effectiveCleanVolume: effectiveClean,
     },
     totals: {
       attestations: attestations.length,
@@ -190,9 +242,11 @@ module.exports = {
   MAX_SCORE,
   BASELINE,
   DEFAULT_UNVERIFIED_FACTOR,
+  PER_ISSUER_VOLUME_CAP,
   computeScore,
   tierForScore,
   suggestedDailyCeiling,
+  cappedVolumeCount,
   recencyFactor,
   resolveUnverifiedFactor,
 };
