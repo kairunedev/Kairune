@@ -99,10 +99,39 @@ function renderAgentList() {
 // ---- rendering: detail panel ----
 const CIRC = 2 * Math.PI * 53;
 
+function renderTrustSources(ts) {
+  if (!ts) return '';
+  let h = '<div class="trust-sources">';
+  h += '<div class="subhead">trust sources <span class="dim">(anti-farming)</span></div>';
+  h += '<div class="ts-grid">';
+  h += '<div class="ts-cell"><span>verified</span><b>' + ts.verified_count + '</b></div>';
+  h += '<div class="ts-cell"><span>unverified</span><b class="dim">' + ts.unverified_count + '</b></div>';
+  h += '<div class="ts-cell"><span>distinct issuers</span><b>' + ts.distinct_issuers + '</b></div>';
+  h += '<div class="ts-cell"><span>confidence</span><b class="conf">' + ts.confidence + '%</b></div>';
+  h += '</div>';
+  if (ts.per_issuer && ts.per_issuer.length > 0) {
+    h += '<div class="ts-breakdown">';
+    ts.per_issuer.forEach((iss) => {
+      const pct = Math.round(iss.share * 100);
+      h += '<div class="ts-issuer">';
+      h += '<span class="ts-name">' + (iss.issuer_name || iss.issuer_id) + '</span>';
+      h += '<span class="ts-count">' + iss.verified_count + ' · ' + pct + '%</span>';
+      h += '</div>';
+    });
+    h += '</div>';
+  }
+  h += '</div>';
+  return h;
+}
+
 async function selectAgent(id) {
   state.selectedId = id;
   renderAgentList();
-  const data = await api('/agents/' + id);
+  const [data, sources] = await Promise.all([
+    api('/agents/' + id),
+    api('/agents/' + id + '/trust-sources').catch(() => null),
+  ]);
+  data.trustSources = sources;
   renderDetail(data);
 }
 
@@ -138,6 +167,9 @@ function renderDetail(data) {
   html += '<div class="bd"><span>penalties</span><b class="neg">' + (bd.negative || 0) + '</b></div>';
   html += '<div class="bd"><span>suggested_ceiling</span><b>$' + (a.suggested_daily_ceiling || 0) + '/day</b></div>';
   html += '</div></div>';
+
+  // trust sources (issuer diversity — anti-farming)
+  html += renderTrustSources(data.trustSources);
 
   // attestation actions
   html += '<div class="subhead">record attestation</div><div class="act-row" id="attActions"></div>';
