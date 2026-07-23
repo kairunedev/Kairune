@@ -82,6 +82,21 @@ async function seed() {
   const db = await getDb();
   const doReset = process.argv.includes('--reset');
 
+  // Safety: this seeds SYNTHETIC demo agents. It must never silently run
+  // against production (or a Turso remote), or it will pollute real data.
+  // Callers that genuinely want demo data in prod must pass --allow-prod.
+  const isProd =
+    process.env.NODE_ENV === 'production' || !!process.env.TURSO_DATABASE_URL;
+  const allowProd =
+    process.argv.includes('--allow-prod') || process.env.SEED_ALLOW_PROD === '1';
+  if (isProd && !allowProd) {
+    console.log(
+      '[seed] refusing to seed demo data in production. ' +
+        'Pass --allow-prod (or SEED_ALLOW_PROD=1) only if you really mean it.'
+    );
+    return;
+  }
+
   const existing = (await db.execute('SELECT COUNT(*) c FROM agents')).rows[0].c;
   if (existing > 0 && !doReset) {
     console.log(

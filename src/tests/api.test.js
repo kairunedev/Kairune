@@ -158,20 +158,76 @@ test('full lifecycle: create → attest → score up → permission → revoke',
   assert.strictEqual(del.status, 200);
 });
 
+test('spend idempotency: Idempotency-Key header prevents a double-charge', async () => {
+  const ctx = await setupIssuer('idem-issuer');
+  const create = await req('POST', '/api/agents', {
+    handle: 'idem-01',
+    wallet: '0x4de000000000000000000000000000000000ea01',
+    operator: 'CI',
+  });
+  assert.strictEqual(create.status, 201);
+  const id = create.body.agent.id;
+
+  // Raise the agent's tier so it can receive a spending permission.
+  for (let i = 0; i < 15; i++) await signedAttest(id, 'task_completed', ctx);
+  await signedAttest(id, 'peer_vouch', ctx);
+
+  const grant = await req('POST', '/api/agents/' + id + '/permissions', {
+    category: 'compute',
+    ceiling: 100,
+  });
+  assert.strictEqual(grant.status, 201);
+  const pid = grant.body.permission.id;
+
+  // First charge with a key → 201 Created.
+  const first = await req(
+    'POST',
+    '/api/permissions/' + pid + '/spends',
+    { amount: 25 },
+    { 'Idempotency-Key': 'order-9001' }
+  );
+  assert.strictEqual(first.status, 201);
+  assert.strictEqual(first.body.budget.used, 25);
+
+  // Retry with the same key → 200, same spend, budget unchanged.
+  const retry = await req(
+    'POST',
+    '/api/permissions/' + pid + '/spends',
+    { amount: 25 },
+    { 'Idempotency-Key': 'order-9001' }
+  );
+  assert.strictEqual(retry.status, 200);
+  assert.strictEqual(retry.body.idempotent_replay, true);
+  assert.strictEqual(retry.body.spend.id, first.body.spend.id);
+  assert.strictEqual(retry.body.budget.used, 25, 'budget must not be charged twice');
+
+  // A different key charges again → 201, budget advances.
+  const other = await req(
+    'POST',
+    '/api/permissions/' + pid + '/spends',
+    { amount: 25 },
+    { 'Idempotency-Key': 'order-9002' }
+  );
+  assert.strictEqual(other.status, 201);
+  assert.strictEqual(other.body.budget.used, 50);
+
+  await req('DELETE', '/api/agents/' + id);
+});
+
 test('validation: missing fields → 400', async () => {
   const r = await req('POST', '/api/agents', {});
   assert.strictEqual(r.status, 400);
 });
 
 test('validation: duplicate handle → 409', async () => {
-  await req('POST', '/api/agents', { handle: 'dup-01', wallet: '0xdup001' });
-  const r = await req('POST', '/api/agents', { handle: 'dup-01', wallet: '0xdup002' });
+  await req('POST', '/api/agents', { handle: 'dup-01', wallet: '0xdd0000000000000000000000000000000000d001' });
+  const r = await req('POST', '/api/agents', { handle: 'dup-01', wallet: '0xdd0000000000000000000000000000000000d002' });
   assert.strictEqual(r.status, 409);
 });
 
 test('validation: duplicate wallet → 409', async () => {
-  await req('POST', '/api/agents', { handle: 'wal-a', wallet: '0xwalletdup1' });
-  const r = await req('POST', '/api/agents', { handle: 'wal-b', wallet: '0xwalletdup1' });
+  await req('POST', '/api/agents', { handle: 'wal-a', wallet: '0xaa0000000000000000000000000000000000a001' });
+  const r = await req('POST', '/api/agents', { handle: 'wal-b', wallet: '0xaa0000000000000000000000000000000000a001' });
   assert.strictEqual(r.status, 409);
 });
 
@@ -180,8 +236,16 @@ test('validation: short wallet → 400', async () => {
   assert.strictEqual(r.status, 400);
 });
 
+test('validation: non-EVM wallet → 400 (Robinhood Chain only)', async () => {
+  const r = await req('POST', '/api/agents', {
+    handle: 'sol-01',
+    wallet: '7EqQdEULxWcraVx3mXKFjc84LhCkMGZCkRuDpvcMwJeK',
+  });
+  assert.strictEqual(r.status, 400);
+});
+
 test('validation: invalid attestation kind → 400', async () => {
-  const c = await req('POST', '/api/agents', { handle: 'kind-01', wallet: '0xkind001' });
+  const c = await req('POST', '/api/agents', { handle: 'kind-01', wallet: '0xcc0000000000000000000000000000000000c001' });
   const r = await req('POST', '/api/agents/' + c.body.agent.id + '/attestations', {
     kind: 'malicious',
   });
@@ -195,7 +259,7 @@ test('unknown api route → 404 JSON', async () => {
 });
 
 test('suspended agent cannot get permission → 409', async () => {
-  const c = await req('POST', '/api/agents', { handle: 'susp-01', wallet: '0xsusp001' });
+  const c = await req('POST', '/api/agents', { handle: 'susp-01', wallet: '0xbb0000000000000000000000000000000000b001' });
   const id = c.body.agent.id;
   await req('PATCH', '/api/agents/' + id + '/status', { status: 'suspended' });
   const r = await req('POST', '/api/agents/' + id + '/permissions', {
@@ -216,7 +280,7 @@ async function trustedAgent(handle, wallet) {
 }
 
 test('spend: authorize within ceiling, then reject over budget', async () => {
-  const id = await trustedAgent('spend-01', '0xspend00000000000000000000000000000000001');
+  const id = await trustedAgent('spend-01', '0x5000000000000000000000000000000000000001');
 
   const grant = await req('POST', '/api/agents/' + id + '/permissions', {
     category: 'compute',
@@ -256,7 +320,7 @@ test('spend: authorize within ceiling, then reject over budget', async () => {
 });
 
 test('spend: history lists accepted charges, most recent first', async () => {
-  const id = await trustedAgent('spend-05', '0xspend00000000000000000000000000000000005');
+  const id = await trustedAgent('spend-05', '0x5000000000000000000000000000000000000005');
   const grant = await req('POST', '/api/agents/' + id + '/permissions', {
     category: 'compute',
     ceiling: 50,
@@ -275,7 +339,7 @@ test('spend: history lists accepted charges, most recent first', async () => {
 });
 
 test('spend: revoked permission cannot be charged → 409', async () => {
-  const id = await trustedAgent('spend-02', '0xspend00000000000000000000000000000000002');
+  const id = await trustedAgent('spend-02', '0x5000000000000000000000000000000000000002');
   const grant = await req('POST', '/api/agents/' + id + '/permissions', {
     category: 'compute',
     ceiling: 50,
@@ -288,7 +352,7 @@ test('spend: revoked permission cannot be charged → 409', async () => {
 });
 
 test('spend: non-positive amount → 400, unknown permission → 404', async () => {
-  const id = await trustedAgent('spend-03', '0xspend00000000000000000000000000000000003');
+  const id = await trustedAgent('spend-03', '0x5000000000000000000000000000000000000003');
   const grant = await req('POST', '/api/agents/' + id + '/permissions', {
     category: 'compute',
     ceiling: 50,
@@ -305,7 +369,7 @@ test('spend: non-positive amount → 400, unknown permission → 404', async () 
 });
 
 test('stats: total_spend reflects authorized spends', async () => {
-  const id = await trustedAgent('spend-04', '0xspend00000000000000000000000000000000004');
+  const id = await trustedAgent('spend-04', '0x5000000000000000000000000000000000000004');
   const grant = await req('POST', '/api/agents/' + id + '/permissions', {
     category: 'compute',
     ceiling: 50,
@@ -322,4 +386,47 @@ test('stats: total_spend reflects authorized spends', async () => {
     Math.round((after.body.total_spend - before.body.total_spend) * 100) / 100,
     12.5
   );
+});
+
+test('wallet lookup: known trusted wallet returns a live trust profile', async () => {
+  const wallet = '0x7000000000000000000000000000000000000001';
+  await trustedAgent('wl-trusted', wallet);
+
+  // Lookup by the exact wallet, and by an upper-cased variant (case-insensitive).
+  const r = await req('GET', '/api/wallets/' + wallet);
+  assert.strictEqual(r.status, 200);
+  assert.strictEqual(r.body.registered, true);
+  assert.strictEqual(r.body.wallet, wallet);
+  assert.strictEqual(r.body.handle, 'wl-trusted');
+  assert.strictEqual(r.body.chain_id, 4663);
+  assert.ok(r.body.tier >= 1, 'trusted agent should be tier >= 1');
+  assert.strictEqual(r.body.trusted, true);
+  assert.ok(typeof r.body.suggested_daily_ceiling === 'number');
+
+  const upper = await req('GET', '/api/wallets/' + wallet.toUpperCase().replace('0X', '0x'));
+  assert.strictEqual(upper.status, 200);
+  assert.strictEqual(upper.body.handle, 'wl-trusted');
+});
+
+test('wallet lookup: unknown wallet → 404 with registered:false', async () => {
+  const r = await req('GET', '/api/wallets/0x9999999999999999999999999999999999999999');
+  assert.strictEqual(r.status, 404);
+  assert.strictEqual(r.body.registered, false);
+  assert.strictEqual(r.body.chain_id, 4663);
+});
+
+test('wallet lookup: non-EVM wallet → 400', async () => {
+  const r = await req('GET', '/api/wallets/7EqQdEULxWcraVx3mXKFjc84LhCkMGZCkRuDpvcMwJeK');
+  assert.strictEqual(r.status, 400);
+});
+
+test('wallet lookup: suspended agent is not trusted even with a high score', async () => {
+  const wallet = '0x7000000000000000000000000000000000000002';
+  const id = await trustedAgent('wl-suspended', wallet);
+  await req('PATCH', '/api/agents/' + id + '/status', { status: 'suspended' });
+
+  const r = await req('GET', '/api/wallets/' + wallet);
+  assert.strictEqual(r.status, 200);
+  assert.strictEqual(r.body.status, 'suspended');
+  assert.strictEqual(r.body.trusted, false);
 });

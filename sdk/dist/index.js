@@ -52,11 +52,11 @@ var Kairune = class {
     if (write && this.adminKey) h["x-admin-key"] = this.adminKey;
     return h;
   }
-  async request(method, path, body) {
+  async request(method, path, body, extraHeaders) {
     const isWrite = method !== "GET";
     const res = await this._fetch(`${this.baseUrl}/api${path}`, {
       method,
-      headers: this.headers(isWrite),
+      headers: { ...this.headers(isWrite), ...extraHeaders },
       body: body ? JSON.stringify(body) : void 0
     });
     const data = await res.json().catch(() => null);
@@ -99,6 +99,26 @@ var Kairune = class {
   async getAgent(idOrHandle) {
     const res = await this.request("GET", `/agents/${encodeURIComponent(idOrHandle)}`);
     return res.agent;
+  }
+  /**
+   * Look up the live trust profile for a Robinhood Chain wallet address.
+   *
+   * Built for payment rails / spend gateways that only know the wallet (not
+   * the internal id or handle) and need a fast go/no-go signal before
+   * approving a charge. An unregistered-but-valid wallet resolves to
+   * `{ registered: false, trusted: undefined }` rather than throwing, so the
+   * caller can treat "unknown" as "not trusted" without special-casing 404s.
+   * An invalid (non-EVM) address still throws a KairuneError(400).
+   */
+  async lookupWallet(wallet) {
+    try {
+      return await this.request("GET", `/wallets/${encodeURIComponent(wallet)}`);
+    } catch (e) {
+      if (e instanceof KairuneError && e.status === 404 && e.body && typeof e.body === "object") {
+        return e.body;
+      }
+      throw e;
+    }
   }
   /** Get attestation history for an agent. */
   async getAttestations(agentId) {
@@ -144,13 +164,21 @@ var Kairune = class {
   /**
    * Authorize a spend against a permission. Enforces the ceiling.
    * Returns `{ approved: true, spend, budget }` or `{ approved: false, error, details }`.
+   *
+   * Pass `idempotencyKey` to make the charge safe to retry: a retry that reuses
+   * the same key returns the original spend without charging the budget again
+   * (the result carries `idempotent_replay: true`). Strongly recommended for
+   * any agent that retries on network failures.
    */
   async spend(permissionId, input) {
+    const { idempotencyKey, ...body } = input;
+    const headers = idempotencyKey ? { "idempotency-key": idempotencyKey } : void 0;
     try {
       const res = await this.request(
         "POST",
         `/permissions/${permissionId}/spends`,
-        input
+        body,
+        headers
       );
       return { approved: true, ...res };
     } catch (e) {

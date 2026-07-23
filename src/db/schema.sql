@@ -107,18 +107,27 @@ CREATE INDEX IF NOT EXISTS idx_permissions_agent ON permissions(agent_id);
 -- spends: actual charges authorized against a permission (enforces the ceiling)
 -- ---------------------------------------------------------------------------
 CREATE TABLE IF NOT EXISTS spends (
-  id            TEXT PRIMARY KEY,              -- uuid
-  permission_id TEXT NOT NULL,
-  agent_id      TEXT NOT NULL,
-  amount        REAL NOT NULL,                 -- charge value (> 0)
-  note          TEXT,
-  created_at    TEXT NOT NULL,
+  id              TEXT PRIMARY KEY,            -- uuid
+  permission_id   TEXT NOT NULL,
+  agent_id        TEXT NOT NULL,
+  amount          REAL NOT NULL,               -- charge value (> 0)
+  note            TEXT,
+  idempotency_key TEXT,                        -- client-supplied dedupe key (optional)
+  created_at      TEXT NOT NULL,
   FOREIGN KEY (permission_id) REFERENCES permissions(id) ON DELETE CASCADE,
   FOREIGN KEY (agent_id) REFERENCES agents(id) ON DELETE CASCADE
 );
 
 CREATE INDEX IF NOT EXISTS idx_spends_permission ON spends(permission_id);
 CREATE INDEX IF NOT EXISTS idx_spends_agent ON spends(agent_id);
+
+-- NOTE: the partial UNIQUE index that dedupes spends by idempotency_key is
+-- created in code (ensureSpendColumns), not here. It must run AFTER the
+-- ALTER TABLE that adds idempotency_key to pre-existing databases, otherwise
+-- this statement would reference a column that does not yet exist on upgrade.
+-- A given idempotency key then authorizes at most one spend per permission;
+-- NULL keys are exempt (SQLite treats NULLs as distinct), so unkeyed spends
+-- are never deduplicated.
 
 -- ---------------------------------------------------------------------------
 -- webhooks: outbound HTTP endpoints notified when spend events happen
@@ -175,3 +184,24 @@ CREATE TABLE IF NOT EXISTS spend_events (
 );
 
 CREATE INDEX IF NOT EXISTS idx_spend_events_created ON spend_events(created_at);
+
+-- ---------------------------------------------------------------------------
+-- issuer_requests: agents request verification from issuers (marketplace flow)
+-- ---------------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS issuer_requests (
+  id            TEXT PRIMARY KEY,              -- uuid
+  agent_id      TEXT NOT NULL,
+  issuer_id     TEXT NOT NULL,
+  status        TEXT NOT NULL DEFAULT 'pending' -- pending | accepted | rejected
+                  CHECK (status IN ('pending', 'accepted', 'rejected')),
+  message       TEXT,                          -- optional request message from agent
+  response_msg  TEXT,                          -- optional issuer's response
+  created_at    TEXT NOT NULL,
+  responded_at  TEXT,
+  FOREIGN KEY (agent_id) REFERENCES agents(id) ON DELETE CASCADE,
+  FOREIGN KEY (issuer_id) REFERENCES issuers(id) ON DELETE CASCADE
+);
+
+CREATE INDEX IF NOT EXISTS idx_issuer_requests_agent ON issuer_requests(agent_id);
+CREATE INDEX IF NOT EXISTS idx_issuer_requests_issuer ON issuer_requests(issuer_id);
+CREATE INDEX IF NOT EXISTS idx_issuer_requests_status ON issuer_requests(status);

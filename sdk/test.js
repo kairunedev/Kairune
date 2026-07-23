@@ -141,7 +141,9 @@ async function resolveTarget() {
   // registerAgent is public (self-register)
   try {
     const handle = 'sdk-test-' + Date.now();
-    const created = await k.registerAgent({ handle, wallet: '0xtest' + Date.now() });
+    // Wallet must be a valid Robinhood Chain (EVM) address: 0x + 40 hex chars.
+    const wallet = '0x' + Date.now().toString(16).padStart(40, '0').slice(-40);
+    const created = await k.registerAgent({ handle, wallet });
     assert('registerAgent() returns id', !!created.id);
     assert('registerAgent() returns handle', created.handle === handle);
     // cleanup: delete with admin-key enabled client if available
@@ -159,6 +161,44 @@ async function resolveTarget() {
     fail++; console.log(FAIL, 'getBudget(invalid) should throw');
   } catch (e) {
     assert('getBudget(invalid) throws 404', e instanceof KairuneError && e.status === 404);
+  }
+
+  // spend() idempotency: reusing a key must not double-charge the budget.
+  // Builds its own fixture (agent → attestations → permission) so it does not
+  // depend on seed data. Admin writes are bypassed in the test-mode server.
+  try {
+    const agent = await k.registerAgent({
+      handle: 'sdk-idem-' + Date.now(),
+      wallet: '0x' + (Date.now().toString(16) + 'b'.repeat(40)).slice(-40),
+    });
+    // Lift the agent to a tier that can hold a spending permission.
+    for (let i = 0; i < 30; i++) await k.attest(agent.id, { kind: 'task_completed' });
+    const grant = await k.grantPermission(agent.id, { category: 'compute', ceiling: 100 });
+    const pid = grant.permission.id;
+
+    const key = 'idem-key-' + Date.now();
+    const first = await k.spend(pid, { amount: 0.01, idempotencyKey: key });
+    assert('spend() first charge approved', first.approved === true);
+    if (first.approved) {
+      const usedAfterFirst = first.budget.used;
+      const replay = await k.spend(pid, { amount: 0.01, idempotencyKey: key });
+      assert('spend() idempotent replay approved', replay.approved === true);
+      assert('spend() idempotent replay flagged', replay.approved && replay.idempotent_replay === true);
+      assert(
+        'spend() idempotent replay returns same spend id',
+        replay.approved && replay.spend.id === first.spend.id
+      );
+      assert(
+        'spend() idempotent replay does not double-charge',
+        replay.approved && replay.budget.used === usedAfterFirst
+      );
+    }
+    if (adminKey) {
+      const ak = new Kairune({ adminKey, baseUrl: base });
+      await ak.deleteAgent(agent.id).catch(() => {});
+    }
+  } catch (e) {
+    fail++; console.log(FAIL, 'spend() idempotency threw unexpectedly:', e.message);
   }
 
   // --- WRITE ENDPOINTS (with admin key) ---

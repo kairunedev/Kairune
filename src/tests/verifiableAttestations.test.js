@@ -55,7 +55,8 @@ function keypair() {
 async function newAgent(handle) {
   const r = await req('POST', '/api/agents', {
     handle,
-    wallet: '0x' + crypto.randomBytes(8).toString('hex'),
+    // Robinhood Chain (EVM) address: 0x + 40 hex chars.
+    wallet: '0x' + crypto.randomBytes(20).toString('hex'),
   });
   return r.body.agent.id;
 }

@@ -64,6 +64,14 @@ const { permission } = await k.grantPermission(agentId, {
 // Spend against it
 await k.spend(permission.id, { amount: 30, note: 'gpu-hours' })
 
+// Safe retries: pass an idempotencyKey so a retried charge is applied only
+// once. A replay returns the original spend with `idempotent_replay: true`
+// and the budget is never charged twice.
+const r = await k.spend(permission.id, { amount: 30, idempotencyKey: 'order-42' })
+if (r.approved && r.idempotent_replay) {
+  // this was a retry — no new charge happened
+}
+
 // Webhooks
 await k.createWebhook({ url: 'https://your-backend.com/kairune' })
 ```

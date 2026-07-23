@@ -18,6 +18,60 @@ function nowIso() {
   return new Date().toISOString();
 }
 
+// Max length for a client-supplied idempotency key.
+const MAX_IDEMPOTENCY_KEY_LEN = 255;
+
+/**
+ * Normalize and validate a client-supplied idempotency key.
+ * Returns the trimmed key, or null when none was supplied. Throws a 400 for a
+ * key that is present but malformed (non-string or too long).
+ * @param {*} raw
+ * @returns {string|null}
+ */
+function normalizeIdempotencyKey(raw) {
+  if (raw === null || raw === undefined || raw === '') return null;
+  if (typeof raw !== 'string') {
+    const err = new Error('idempotency_key must be a string');
+    err.status = 400;
+    throw err;
+  }
+  const key = raw.trim();
+  if (!key) return null;
+  if (key.length > MAX_IDEMPOTENCY_KEY_LEN) {
+    const err = new Error(
+      `idempotency_key must be at most ${MAX_IDEMPOTENCY_KEY_LEN} characters`
+    );
+    err.status = 400;
+    throw err;
+  }
+  return key;
+}
+
+/**
+ * Find a prior spend recorded under a given idempotency key for a permission.
+ * @param {string} permissionId
+ * @param {string} key
+ * @returns {Promise<object|null>}
+ */
+async function findSpendByKey(permissionId, key) {
+  const db = await getDb();
+  const res = await db.execute({
+    sql: `SELECT * FROM spends WHERE permission_id = ? AND idempotency_key = ? LIMIT 1`,
+    args: [permissionId, key],
+  });
+  return res.rows[0] || null;
+}
+
+/**
+ * Whether a DB error is a UNIQUE-constraint violation (idempotency race).
+ * @param {*} err
+ * @returns {boolean}
+ */
+function isUniqueConstraintError(err) {
+  const msg = String((err && err.message) || '');
+  return /UNIQUE constraint failed|SQLITE_CONSTRAINT/i.test(msg);
+}
+
 /**
  * Emit a spend event to registered webhooks.
  *
@@ -118,12 +172,23 @@ async function usedInWindow(permissionId, period, nowMs) {
  * rolling window. On success the spend is recorded and the updated budget is
  * returned. On rejection an Error with a `status` is thrown.
  *
+ * When an `idempotencyKey` is supplied, the charge is applied at most once
+ * per (permission, key): a retry that reuses the same key returns the
+ * original spend without touching the budget again. This makes spend
+ * authorization safe for agents that retry on network failures. The returned
+ * budget on a replay reflects the current window, and the result carries
+ * `idempotent_replay: true` so callers can tell a replay from a fresh charge.
+ *
  * @param {string} permissionId
- * @param {{amount:number, note?:string}} input
+ * @param {{amount:number, note?:string, idempotencyKey?:string}} input
  * @param {{nowMs?:number}} [opts]
  * @returns {Promise<object>}
  */
-async function authorizeSpend(permissionId, { amount, note = null }, opts = {}) {
+async function authorizeSpend(
+  permissionId,
+  { amount, note = null, idempotencyKey = null },
+  opts = {}
+) {
   const db = await getDb();
 
   const value = Number(amount);
@@ -131,6 +196,22 @@ async function authorizeSpend(permissionId, { amount, note = null }, opts = {}) 
     const err = new Error('Amount must be a positive number');
     err.status = 400;
     throw err;
+  }
+
+  const key = normalizeIdempotencyKey(idempotencyKey);
+
+  // Idempotent replay: if this key already charged this permission, return the
+  // original spend without charging again. Checked before any budget math so a
+  // retry never consumes budget or emits a duplicate event.
+  if (key) {
+    const replay = await findSpendByKey(permissionId, key);
+    if (replay) {
+      return {
+        spend: replay,
+        budget: await budgetSummary(permissionId, opts),
+        idempotent_replay: true,
+      };
+    }
   }
 
   const permRes = await db.execute({
@@ -206,21 +287,39 @@ async function authorizeSpend(permissionId, { amount, note = null }, opts = {}) 
     agent_id: permission.agent_id,
     amount: value,
     note,
+    idempotency_key: key,
     created_at: opts.nowMs ? new Date(opts.nowMs).toISOString() : nowIso(),
   };
 
-  await db.execute({
-    sql: `INSERT INTO spends (id, permission_id, agent_id, amount, note, created_at)
-          VALUES (?, ?, ?, ?, ?, ?)`,
-    args: [
-      spend.id,
-      spend.permission_id,
-      spend.agent_id,
-      spend.amount,
-      spend.note,
-      spend.created_at,
-    ],
-  });
+  try {
+    await db.execute({
+      sql: `INSERT INTO spends (id, permission_id, agent_id, amount, note, idempotency_key, created_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?)`,
+      args: [
+        spend.id,
+        spend.permission_id,
+        spend.agent_id,
+        spend.amount,
+        spend.note,
+        spend.idempotency_key,
+        spend.created_at,
+      ],
+    });
+  } catch (e) {
+    // Concurrent retry: another request with the same key won the unique-index
+    // race. Return that original spend instead of charging twice or erroring.
+    if (key && isUniqueConstraintError(e)) {
+      const winner = await findSpendByKey(permissionId, key);
+      if (winner) {
+        return {
+          spend: winner,
+          budget: await budgetSummary(permissionId, opts),
+          idempotent_replay: true,
+        };
+      }
+    }
+    throw e;
+  }
 
   await emitSpendEvent('spend.approved', {
     permission_id: permissionId,
@@ -322,5 +421,8 @@ module.exports = {
   recordEvent,
   usedInWindow,
   windowStart,
+  normalizeIdempotencyKey,
+  findSpendByKey,
   PERIOD_MS,
+  MAX_IDEMPOTENCY_KEY_LEN,
 };

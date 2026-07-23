@@ -17,6 +17,9 @@ data/
 *.db-wal
 .vercel
 
+# Production data snapshots (may contain real wallet addresses) — never commit
+backups/
+
 # Local-only
 .cursor/
 brand/

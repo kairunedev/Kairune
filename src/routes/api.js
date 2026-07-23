@@ -35,17 +35,21 @@ const attestationService = require('../services/attestationService');
 const permissionService = require('../services/permissionService');
 const spendService = require('../services/spendService');
 const issuerService = require('../services/issuerService');
+const issuerRequestService = require('../services/issuerRequestService');
 const webhookService = require('../services/webhookService');
 const verification = require('../services/verification');
 const replayGuard = require('../services/replayGuard');
 const trustScore = require('../services/trustScore');
 const issuerDiversity = require('../services/issuerDiversity');
-const { getDb } = require('../db');
 const { rateLimit } = require('../middleware/rateLimit');
 const { requireIssuer } = require('../middleware/issuerAuth');
 const {
   assertValidHandle,
+  assertValidRobinhoodWallet,
   requireAdmin,
+  ROBINHOOD_CHAIN_ID,
+  ROBINHOOD_CHAIN_NAME,
+  EVM_ADDRESS_RE,
 } = require('../middleware/moderation');
 const { tokenStatus } = require('../services/tokenGate');
 
@@ -89,7 +93,13 @@ router.get('/meta', (req, res) => {
     signature_max_age_seconds: replayGuard.maxAgeSeconds(),
     verify_endpoint: '/api/verify',
     trust_sources_endpoint: '/api/agents/:id/trust-sources',
+    wallet_lookup_endpoint: '/api/wallets/:wallet',
+    idempotency_header: 'Idempotency-Key',
+    idempotency_max_key_length: spendService.MAX_IDEMPOTENCY_KEY_LEN,
     diversity_target_issuers: issuerDiversity.DIVERSITY_TARGET_ISSUERS,
+    webhook_events: webhookService.EVENTS,
+    chain: ROBINHOOD_CHAIN_NAME,
+    chain_id: ROBINHOOD_CHAIN_ID,
   });
 });
 
@@ -155,34 +165,11 @@ router.get(
   '/stats',
   wrap(async (req, res) => {
     await agentService.purgeExpiredDemos().catch(() => 0);
-    const db = await getDb();
-    const one = async (sql) => (await db.execute(sql)).rows[0];
-
-    const agents = (await one(`SELECT COUNT(*) c FROM agents`)).c;
-    const active = (
-      await one(`SELECT COUNT(*) c FROM agents WHERE status = 'active'`)
-    ).c;
-    const attestations = (await one(`SELECT COUNT(*) c FROM attestations`)).c;
-    const activePerms = (
-      await one(`SELECT COUNT(*) c FROM permissions WHERE status = 'active'`)
-    ).c;
-    const totalSpend = (await one(`SELECT COALESCE(SUM(amount), 0) s FROM spends`)).s;
-    const avgScore = (await one(`SELECT AVG(score) a FROM agents`)).a || 0;
-    const tierDist = (
-      await db.execute(
-        `SELECT tier, COUNT(*) c FROM agents GROUP BY tier ORDER BY tier`
-      )
-    ).rows;
-
-    res.json({
-      total_agents: agents,
-      active_agents: active,
-      total_attestations: attestations,
-      active_permissions: activePerms,
-      total_spend: Math.round((Number(totalSpend) || 0) * 100) / 100,
-      avg_score: Math.round(avgScore),
-      tier_distribution: tierDist,
-    });
+    // Apply the SAME demo/test exclusion the leaderboard uses so public stats
+    // match what visitors actually see. include_demo=1 counts everything.
+    const includeDemo =
+      req.query.include_demo === '1' || req.query.include_demo === 'true';
+    res.json(await agentService.getStats({ includeDemo }));
   })
 );
 
@@ -227,12 +214,9 @@ router.post(
     const handle = assertValidHandle(req.body.handle, {
       allowTry: op === 'demo-loop',
     });
-    const wallet = String(req.body.wallet).trim();
-    if (wallet.length < 6) {
-      const err = new Error('Wallet / identity must be at least 6 characters');
-      err.status = 400;
-      throw err;
-    }
+    // Kairune is a single-chain registry: agents live on Robinhood Chain, so
+    // the identity must be a valid Robinhood Chain (EVM) address.
+    const wallet = assertValidRobinhoodWallet(req.body.wallet);
     const existingHandle = await agentService.getAgent(handle);
     if (existingHandle) {
       const err = new Error('Handle already registered — try a different name');
@@ -247,7 +231,7 @@ router.post(
     }
     const agent = await agentService.createAgent({
       handle,
-      wallet: req.body.wallet,
+      wallet,
       operator: req.body.operator,
     });
     res.status(201).json({ agent });
@@ -314,6 +298,60 @@ router.get(
       confidence: diversity.confidence,
       target_issuers: issuerDiversity.DIVERSITY_TARGET_ISSUERS,
       per_issuer,
+    });
+  })
+);
+
+// Wallet trust lookup — resolve a Robinhood Chain wallet address to its live
+// trust profile. Built for payment rails / spend gateways that only know the
+// wallet (not the internal id/handle) and need a fast go / no-go signal before
+// approving a charge. Public, read-only, no PII beyond what the leaderboard
+// already exposes. Score/tier are recomputed live so the answer is never stale.
+router.get(
+  '/wallets/:wallet',
+  wrap(async (req, res) => {
+    const raw = String(req.params.wallet || '').trim();
+    // Single-chain registry: only Robinhood Chain (EVM) addresses are valid.
+    if (!EVM_ADDRESS_RE.test(raw)) {
+      const err = new Error(
+        'Wallet must be a valid Robinhood Chain address (0x followed by 40 hex characters)'
+      );
+      err.status = 400;
+      throw err;
+    }
+    const wallet = raw.toLowerCase();
+
+    const base = await agentService.getAgentByWallet(wallet);
+    if (!base) {
+      // Unknown wallet is a valid, useful answer for a gateway: "not registered".
+      return res.status(404).json({
+        registered: false,
+        wallet,
+        chain: ROBINHOOD_CHAIN_NAME,
+        chain_id: ROBINHOOD_CHAIN_ID,
+        message: 'Wallet is not registered in the Kairune trust registry',
+      });
+    }
+
+    const agent = await agentService.recalcAgent(base.id);
+    const { tier, label } = trustScore.tierForScore(agent.score);
+
+    res.json({
+      registered: true,
+      wallet,
+      chain: ROBINHOOD_CHAIN_NAME,
+      chain_id: ROBINHOOD_CHAIN_ID,
+      agent_id: agent.id,
+      handle: agent.handle,
+      status: agent.status,
+      score: agent.score,
+      tier,
+      tier_label: label,
+      max_score: trustScore.MAX_SCORE,
+      suggested_daily_ceiling: trustScore.suggestedDailyCeiling(agent.score),
+      // A suspended agent should never be trusted to spend, regardless of score.
+      trusted: agent.status === 'active' && tier >= 1,
+      updated_at: agent.updated_at,
     });
   })
 );
@@ -580,11 +618,16 @@ router.post(
   wrap(async (req, res) => {
     requireAdmin(req);
     requireFields(req.body, ['amount']);
+    // Idempotency key: standard `Idempotency-Key` header wins, else body field.
+    // Retries that reuse the same key never double-charge the budget.
+    const idempotencyKey = req.get('Idempotency-Key') || req.body.idempotency_key;
     const result = await spendService.authorizeSpend(req.params.pid, {
       amount: req.body.amount,
       note: req.body.note,
+      idempotencyKey,
     });
-    res.status(201).json(result);
+    // A replay returns the original spend (200), a fresh charge is created (201).
+    res.status(result.idempotent_replay ? 200 : 201).json(result);
   })
 );
 

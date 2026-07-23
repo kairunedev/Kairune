@@ -51,3 +51,15 @@ lives outside the agent's own logic. A runaway loop still can't overspend.
 # uses a permission id printed by the quickstart, or any active permission
 KAIRUNE_PERMISSION_ID=<id> npx tsx examples/02-spend-guard.ts
 ```
+
+### `03-wallet-gate.ts`
+
+The gateway pattern: check a wallet's trust **before** letting it spend, when
+all you have is a Robinhood Chain address. One `lookupWallet` call answers is it
+registered, is it trusted, what tier, and what daily ceiling — then the gateway
+allows or denies locally. No admin key needed (it's a public read).
+
+```bash
+# grab a wallet from GET /api/agents
+WALLET=0x71a2c4e83b90ff01a2b3c4d5e6f70819a2b39f0c npx tsx examples/03-wallet-gate.ts
+```

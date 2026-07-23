@@ -74,6 +74,7 @@ export interface Spend {
   agent_id: string
   amount: number
   note: string | null
+  idempotency_key?: string | null
   created_at: string
 }
 
@@ -81,6 +82,8 @@ export interface SpendResult {
   approved: true
   spend: Spend
   budget: Budget
+  /** True when this result is a replay of an earlier spend with the same idempotency key (no new charge was applied). */
+  idempotent_replay?: boolean
 }
 
 export interface SpendBlocked {
@@ -142,6 +145,32 @@ export interface Meta {
   max_score: number
 }
 
+/**
+ * Trust profile for a Robinhood Chain wallet, returned by `lookupWallet`.
+ * `registered: false` means the wallet is a valid address but not in the
+ * registry — a useful "unknown" answer for a spend gateway.
+ */
+export interface WalletProfile {
+  registered: boolean
+  wallet: string
+  chain: string
+  chain_id: number
+  // Present only when registered === true:
+  agent_id?: string
+  handle?: string
+  status?: 'active' | 'suspended'
+  score?: number
+  tier?: number
+  tier_label?: string
+  max_score?: number
+  suggested_daily_ceiling?: number
+  /** active AND tier >= 1 — the go/no-go signal a gateway should key on. */
+  trusted?: boolean
+  updated_at?: string
+  // Present only when registered === false:
+  message?: string
+}
+
 // ---------------------------------------------------------------------------
 // Error
 // ---------------------------------------------------------------------------
@@ -183,11 +212,11 @@ export class Kairune {
     return h
   }
 
-  private async request<T>(method: string, path: string, body?: unknown): Promise<T> {
+  private async request<T>(method: string, path: string, body?: unknown, extraHeaders?: Record<string, string>): Promise<T> {
     const isWrite = method !== 'GET'
     const res = await this._fetch(`${this.baseUrl}/api${path}`, {
       method,
-      headers: this.headers(isWrite),
+      headers: { ...this.headers(isWrite), ...extraHeaders },
       body: body ? JSON.stringify(body) : undefined,
     })
 
@@ -238,6 +267,29 @@ export class Kairune {
   async getAgent(idOrHandle: string): Promise<Agent> {
     const res = await this.request<{ agent: Agent }>('GET', `/agents/${encodeURIComponent(idOrHandle)}`)
     return res.agent
+  }
+
+  /**
+   * Look up the live trust profile for a Robinhood Chain wallet address.
+   *
+   * Built for payment rails / spend gateways that only know the wallet (not
+   * the internal id or handle) and need a fast go/no-go signal before
+   * approving a charge. An unregistered-but-valid wallet resolves to
+   * `{ registered: false, trusted: undefined }` rather than throwing, so the
+   * caller can treat "unknown" as "not trusted" without special-casing 404s.
+   * An invalid (non-EVM) address still throws a KairuneError(400).
+   */
+  async lookupWallet(wallet: string): Promise<WalletProfile> {
+    try {
+      return await this.request<WalletProfile>('GET', `/wallets/${encodeURIComponent(wallet)}`)
+    } catch (e) {
+      // 404 carries a structured { registered: false, ... } body — return it
+      // as data instead of an error, since "not registered" is a valid answer.
+      if (e instanceof KairuneError && e.status === 404 && e.body && typeof e.body === 'object') {
+        return e.body as WalletProfile
+      }
+      throw e
+    }
   }
 
   /** Get attestation history for an agent. */
@@ -293,13 +345,24 @@ export class Kairune {
   /**
    * Authorize a spend against a permission. Enforces the ceiling.
    * Returns `{ approved: true, spend, budget }` or `{ approved: false, error, details }`.
+   *
+   * Pass `idempotencyKey` to make the charge safe to retry: a retry that reuses
+   * the same key returns the original spend without charging the budget again
+   * (the result carries `idempotent_replay: true`). Strongly recommended for
+   * any agent that retries on network failures.
    */
-  async spend(permissionId: string, input: { amount: number; note?: string }): Promise<SpendResult | SpendBlocked> {
+  async spend(
+    permissionId: string,
+    input: { amount: number; note?: string; idempotencyKey?: string }
+  ): Promise<SpendResult | SpendBlocked> {
+    const { idempotencyKey, ...body } = input
+    const headers = idempotencyKey ? { 'idempotency-key': idempotencyKey } : undefined
     try {
-      const res = await this.request<{ spend: Spend; budget: Budget }>(
+      const res = await this.request<{ spend: Spend; budget: Budget; idempotent_replay?: boolean }>(
         'POST',
         `/permissions/${permissionId}/spends`,
-        input
+        body,
+        headers
       )
       return { approved: true, ...res }
     } catch (e) {

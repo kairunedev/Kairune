@@ -106,6 +106,27 @@ async function initSchema(c) {
   }
 
   await ensureAttestationColumns(c);
+  await ensureSpendColumns(c);
+}
+
+/**
+ * Idempotently add the idempotency_key column (+ its unique index) to an
+ * existing spends table. CREATE TABLE IF NOT EXISTS will not alter a table
+ * that already exists, so the column is added via PRAGMA table_info + ALTER.
+ * @param {import('@libsql/client').Client} c
+ */
+async function ensureSpendColumns(c) {
+  const info = await c.execute('PRAGMA table_info(spends)');
+  const existing = new Set(info.rows.map((r) => r.name));
+  if (!existing.has('idempotency_key')) {
+    await c.execute('ALTER TABLE spends ADD COLUMN idempotency_key TEXT');
+  }
+  // Partial unique index: dedupes keyed spends per permission, exempts NULLs.
+  await c.execute(
+    `CREATE UNIQUE INDEX IF NOT EXISTS idx_spends_idempotency
+       ON spends(permission_id, idempotency_key)
+       WHERE idempotency_key IS NOT NULL`
+  );
 }
 
 /**

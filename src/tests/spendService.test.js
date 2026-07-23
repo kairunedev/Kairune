@@ -88,3 +88,87 @@ test('budgetSummary reports used and remaining without charging', async () => {
   assert.strictEqual(summary.used, 75);
   assert.strictEqual(summary.remaining, 125);
 });
+
+test('idempotency: reusing a key returns the original spend without double-charging', async () => {
+  const { permId } = await seedPermission({ ceiling: 100, period: 'day' });
+  const now = Date.now();
+
+  const first = await spendService.authorizeSpend(
+    permId,
+    { amount: 30, idempotencyKey: 'retry-abc' },
+    { nowMs: now }
+  );
+  assert.strictEqual(first.budget.used, 30);
+  assert.notStrictEqual(first.idempotent_replay, true);
+
+  // Same key again (e.g. the agent retried after a dropped response).
+  const replay = await spendService.authorizeSpend(
+    permId,
+    { amount: 30, idempotencyKey: 'retry-abc' },
+    { nowMs: now }
+  );
+  assert.strictEqual(replay.idempotent_replay, true);
+  assert.strictEqual(replay.spend.id, first.spend.id, 'same spend row returned');
+  assert.strictEqual(replay.budget.used, 30, 'budget was not charged twice');
+
+  // Only one spend row exists for this permission.
+  const spends = await spendService.listSpends(permId);
+  assert.strictEqual(spends.length, 1);
+});
+
+test('idempotency: a replay is honoured even after the budget is exhausted', async () => {
+  const { permId } = await seedPermission({ ceiling: 50, period: 'day' });
+  const now = Date.now();
+
+  const first = await spendService.authorizeSpend(
+    permId,
+    { amount: 50, idempotencyKey: 'fill-it' },
+    { nowMs: now }
+  );
+  assert.strictEqual(first.budget.remaining, 0);
+
+  // Budget is now full; a fresh charge would be blocked, but the same key
+  // must still return the original spend rather than throwing.
+  const replay = await spendService.authorizeSpend(
+    permId,
+    { amount: 50, idempotencyKey: 'fill-it' },
+    { nowMs: now }
+  );
+  assert.strictEqual(replay.idempotent_replay, true);
+  assert.strictEqual(replay.spend.id, first.spend.id);
+});
+
+test('idempotency: different keys are charged independently', async () => {
+  const { permId } = await seedPermission({ ceiling: 100, period: 'day' });
+  const now = Date.now();
+
+  await spendService.authorizeSpend(permId, { amount: 20, idempotencyKey: 'k1' }, { nowMs: now });
+  const second = await spendService.authorizeSpend(
+    permId,
+    { amount: 20, idempotencyKey: 'k2' },
+    { nowMs: now }
+  );
+  assert.strictEqual(second.budget.used, 40);
+  assert.notStrictEqual(second.idempotent_replay, true);
+});
+
+test('idempotency: unkeyed spends are never deduplicated', async () => {
+  const { permId } = await seedPermission({ ceiling: 100, period: 'day' });
+  const now = Date.now();
+
+  await spendService.authorizeSpend(permId, { amount: 10 }, { nowMs: now });
+  const second = await spendService.authorizeSpend(permId, { amount: 10 }, { nowMs: now });
+  assert.strictEqual(second.budget.used, 20);
+  assert.notStrictEqual(second.idempotent_replay, true);
+});
+
+test('normalizeIdempotencyKey rejects malformed keys', () => {
+  assert.strictEqual(spendService.normalizeIdempotencyKey(null), null);
+  assert.strictEqual(spendService.normalizeIdempotencyKey(''), null);
+  assert.strictEqual(spendService.normalizeIdempotencyKey('  ok-key '), 'ok-key');
+  assert.throws(() => spendService.normalizeIdempotencyKey(123), (e) => e.status === 400);
+  assert.throws(
+    () => spendService.normalizeIdempotencyKey('x'.repeat(spendService.MAX_IDEMPOTENCY_KEY_LEN + 1)),
+    (e) => e.status === 400
+  );
+});

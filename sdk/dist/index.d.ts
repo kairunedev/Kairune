@@ -65,12 +65,15 @@ interface Spend {
     agent_id: string;
     amount: number;
     note: string | null;
+    idempotency_key?: string | null;
     created_at: string;
 }
 interface SpendResult {
     approved: true;
     spend: Spend;
     budget: Budget;
+    /** True when this result is a replay of an earlier spend with the same idempotency key (no new charge was applied). */
+    idempotent_replay?: boolean;
 }
 interface SpendBlocked {
     approved: false;
@@ -132,6 +135,29 @@ interface Meta {
     periods: string[];
     max_score: number;
 }
+/**
+ * Trust profile for a Robinhood Chain wallet, returned by `lookupWallet`.
+ * `registered: false` means the wallet is a valid address but not in the
+ * registry — a useful "unknown" answer for a spend gateway.
+ */
+interface WalletProfile {
+    registered: boolean;
+    wallet: string;
+    chain: string;
+    chain_id: number;
+    agent_id?: string;
+    handle?: string;
+    status?: 'active' | 'suspended';
+    score?: number;
+    tier?: number;
+    tier_label?: string;
+    max_score?: number;
+    suggested_daily_ceiling?: number;
+    /** active AND tier >= 1 — the go/no-go signal a gateway should key on. */
+    trusted?: boolean;
+    updated_at?: string;
+    message?: string;
+}
 declare class KairuneError extends Error {
     status: number;
     body: unknown;
@@ -158,6 +184,17 @@ declare class Kairune {
     }): Promise<Agent[]>;
     /** Get a single agent by ID or handle. */
     getAgent(idOrHandle: string): Promise<Agent>;
+    /**
+     * Look up the live trust profile for a Robinhood Chain wallet address.
+     *
+     * Built for payment rails / spend gateways that only know the wallet (not
+     * the internal id or handle) and need a fast go/no-go signal before
+     * approving a charge. An unregistered-but-valid wallet resolves to
+     * `{ registered: false, trusted: undefined }` rather than throwing, so the
+     * caller can treat "unknown" as "not trusted" without special-casing 404s.
+     * An invalid (non-EVM) address still throws a KairuneError(400).
+     */
+    lookupWallet(wallet: string): Promise<WalletProfile>;
     /** Get attestation history for an agent. */
     getAttestations(agentId: string): Promise<Attestation[]>;
     /** Get permissions for an agent. */
@@ -195,10 +232,16 @@ declare class Kairune {
     /**
      * Authorize a spend against a permission. Enforces the ceiling.
      * Returns `{ approved: true, spend, budget }` or `{ approved: false, error, details }`.
+     *
+     * Pass `idempotencyKey` to make the charge safe to retry: a retry that reuses
+     * the same key returns the original spend without charging the budget again
+     * (the result carries `idempotent_replay: true`). Strongly recommended for
+     * any agent that retries on network failures.
      */
     spend(permissionId: string, input: {
         amount: number;
         note?: string;
+        idempotencyKey?: string;
     }): Promise<SpendResult | SpendBlocked>;
     /** Suspend or activate an agent. */
     setAgentStatus(agentId: string, status: 'active' | 'suspended'): Promise<Agent>;
@@ -223,4 +266,4 @@ declare class Kairune {
     }>;
 }
 
-export { type Agent, type Attestation, type Budget, type FeedEvent, Kairune, KairuneError, type KairuneOptions, type Meta, type Permission, type Spend, type SpendBlocked, type SpendResult, type Stats, type Webhook, Kairune as default };
+export { type Agent, type Attestation, type Budget, type FeedEvent, Kairune, KairuneError, type KairuneOptions, type Meta, type Permission, type Spend, type SpendBlocked, type SpendResult, type Stats, type WalletProfile, type Webhook, Kairune as default };

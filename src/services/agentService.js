@@ -6,7 +6,12 @@
 
 const crypto = require('crypto');
 const { getDb } = require('../db');
-const { computeScore, suggestedDailyCeiling } = require('./trustScore');
+const {
+  computeScore,
+  suggestedDailyCeiling,
+  TIER_LABELS,
+} = require('./trustScore');
+const webhookService = require('./webhookService');
 
 function nowIso() {
   return new Date().toISOString();
@@ -75,18 +80,12 @@ async function getAgentByWallet(wallet) {
   return res.rows[0] || null;
 }
 
-/**
- * List agents (leaderboard), ordered by highest score.
- * @param {{limit?:number, offset?:number, status?:string}} [opts]
- * @returns {Promise<object[]>}
- */
-async function listAgents({ limit = 50, offset = 0, status, includeDemo = false } = {}) {
-  const db = await getDb();
-  // Hide demo/test/junk agents from the public leaderboard. Data stays in the
-  // DB (nothing is deleted) — it just never surfaces on the public list.
-  const demoFilter = includeDemo
-    ? ''
-    : ` AND NOT (
+// Shared SQL predicate that excludes demo / test / junk agents from public
+// surfaces (leaderboard AND stats — they must agree). Data stays in the DB
+// (nothing is deleted); it just never surfaces publicly. `wallet NOT LIKE 0x%`
+// intentionally excludes non-EVM identities too, matching current behavior.
+// Prefixed with " AND " so it can be appended to a WHERE clause.
+const DEMO_EXCLUSION_SQL = ` AND NOT (
          lower(handle) LIKE 'demo-%'
          OR lower(handle) LIKE 'try-%'
          OR lower(handle) LIKE 'sdk-test-%'
@@ -96,6 +95,15 @@ async function listAgents({ limit = 50, offset = 0, status, includeDemo = false 
          OR lower(COALESCE(wallet,'')) LIKE '0x00000000%'
          OR lower(COALESCE(wallet,'')) NOT LIKE '0x%'
        )`;
+
+/**
+ * List agents (leaderboard), ordered by highest score.
+ * @param {{limit?:number, offset?:number, status?:string}} [opts]
+ * @returns {Promise<object[]>}
+ */
+async function listAgents({ limit = 50, offset = 0, status, includeDemo = false } = {}) {
+  const db = await getDb();
+  const demoFilter = includeDemo ? '' : DEMO_EXCLUSION_SQL;
   if (status) {
     const res = await db.execute({
       sql: `SELECT * FROM agents WHERE status = ?${demoFilter}
@@ -111,6 +119,64 @@ async function listAgents({ limit = 50, offset = 0, status, includeDemo = false 
     args: [limit, offset],
   });
   return res.rows;
+}
+
+/**
+ * Public platform statistics. Applies the SAME demo/test exclusion as the
+ * leaderboard so the headline numbers match what visitors actually see.
+ * Set includeDemo=true to count everything (internal/debug use).
+ * @param {{includeDemo?:boolean}} [opts]
+ * @returns {Promise<{total_agents:number, active_agents:number,
+ *   total_attestations:number, active_permissions:number, total_spend:number,
+ *   avg_score:number, tier_distribution:Array<{tier:number,c:number}>}>}
+ */
+async function getStats({ includeDemo = false } = {}) {
+  const db = await getDb();
+  const demoFilter = includeDemo ? '' : DEMO_EXCLUSION_SQL;
+  const one = async (sql) => (await db.execute(sql)).rows[0];
+
+  // Attestations / permissions / spends are only counted for non-excluded
+  // agents so the totals are internally consistent with the agent count.
+  const agentIds = `SELECT id FROM agents WHERE 1=1${demoFilter}`;
+
+  const total = (await one(`SELECT COUNT(*) c FROM agents WHERE 1=1${demoFilter}`)).c;
+  const active = (
+    await one(
+      `SELECT COUNT(*) c FROM agents WHERE status = 'active'${demoFilter}`
+    )
+  ).c;
+  const attestations = (
+    await one(
+      `SELECT COUNT(*) c FROM attestations WHERE agent_id IN (${agentIds})`
+    )
+  ).c;
+  const activePerms = (
+    await one(
+      `SELECT COUNT(*) c FROM permissions WHERE status = 'active' AND agent_id IN (${agentIds})`
+    )
+  ).c;
+  const totalSpend = (
+    await one(
+      `SELECT COALESCE(SUM(amount), 0) s FROM spends WHERE permission_id IN (
+         SELECT id FROM permissions WHERE agent_id IN (${agentIds}))`
+    )
+  ).s;
+  const avgScore = (await one(`SELECT AVG(score) a FROM agents WHERE 1=1${demoFilter}`)).a || 0;
+  const tierDist = (
+    await db.execute(
+      `SELECT tier, COUNT(*) c FROM agents WHERE 1=1${demoFilter} GROUP BY tier ORDER BY tier`
+    )
+  ).rows;
+
+  return {
+    total_agents: Number(total) || 0,
+    active_agents: Number(active) || 0,
+    total_attestations: Number(attestations) || 0,
+    active_permissions: Number(activePerms) || 0,
+    total_spend: Math.round((Number(totalSpend) || 0) * 100) / 100,
+    avg_score: Math.round(Number(avgScore) || 0),
+    tier_distribution: tierDist,
+  };
 }
 
 /**
@@ -135,6 +201,12 @@ async function setAgentStatus(id, status) {
  */
 async function recalcAgent(id) {
   const db = await getDb();
+
+  // Snapshot the tier/score before rescoring so we can detect a tier change.
+  const prev = await getAgent(id);
+  const prevTier = prev ? Number(prev.tier) : null;
+  const prevScore = prev ? Number(prev.score) : null;
+
   const res = await db.execute({
     sql: `SELECT kind, weight, created_at, verification_status, issuer_id FROM attestations WHERE agent_id = ?`,
     args: [id],
@@ -148,6 +220,27 @@ async function recalcAgent(id) {
   });
 
   const agent = await getAgent(id);
+
+  // Emit an agent.tier_changed webhook when the tier actually moves. This lets
+  // integrators react to trust changes in real time — e.g. freeze spending on a
+  // downgrade or raise ceilings on a promotion. Best-effort: never let a
+  // notification failure affect the rescore result. Skipped when there was no
+  // prior tier (brand-new agent) or the tier is unchanged.
+  if (agent && prevTier !== null && Number(result.tier) !== prevTier) {
+    const newTier = Number(result.tier);
+    await emitTierChanged({
+      agent_id: agent.id,
+      agent_handle: agent.handle,
+      previous_tier: prevTier,
+      previous_label: TIER_LABELS[prevTier] || null,
+      previous_score: prevScore,
+      tier: newTier,
+      label: result.label,
+      score: result.score,
+      direction: newTier > prevTier ? 'up' : 'down',
+    });
+  }
+
   return {
     ...agent,
     label: result.label,
@@ -155,6 +248,22 @@ async function recalcAgent(id) {
     totals: result.totals,
     suggested_daily_ceiling: suggestedDailyCeiling(result.score),
   };
+}
+
+/**
+ * Fire an agent.tier_changed webhook event. Fully swallowed on failure so a
+ * webhook problem can never break a rescore. Awaited by recalcAgent so the
+ * delivery completes before the serverless (Vercel) process is frozen when the
+ * HTTP response is sent — same reason spend events are awaited.
+ * @param {object} data
+ * @returns {Promise<void>}
+ */
+async function emitTierChanged(data) {
+  try {
+    await webhookService.emit('agent.tier_changed', data);
+  } catch {
+    /* never let notifications affect scoring */
+  }
 }
 
 /**
@@ -202,8 +311,10 @@ module.exports = {
   getAgent,
   getAgentByWallet,
   listAgents,
+  getStats,
   setAgentStatus,
   recalcAgent,
   deleteAgent,
   purgeExpiredDemos,
+  DEMO_EXCLUSION_SQL,
 };

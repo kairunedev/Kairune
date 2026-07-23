@@ -62,6 +62,33 @@ function isDemoAgent(agent) {
   return h.startsWith('demo-') || op === 'demo-loop' || op === 'demo user';
 }
 
+// Kairune is scoped to Robinhood Chain (an EVM chain, chainId 4663). A valid
+// agent identity must therefore be a well-formed EVM address: 0x + 40 hex
+// characters. This keeps the registry single-chain and rejects Solana / junk
+// / truncated wallets at the door instead of hiding them later.
+const ROBINHOOD_CHAIN_ID = 4663;
+const ROBINHOOD_CHAIN_NAME = 'Robinhood Chain';
+const EVM_ADDRESS_RE = /^0x[0-9a-fA-F]{40}$/;
+
+/**
+ * Validate a wallet as a Robinhood Chain (EVM) address.
+ * Throws Error with .status = 400 on failure. Returns the normalized
+ * (lower-cased) address on success.
+ * @param {string} wallet
+ * @returns {string}
+ */
+function assertValidRobinhoodWallet(wallet) {
+  const w = String(wallet || '').trim();
+  if (!EVM_ADDRESS_RE.test(w)) {
+    const err = new Error(
+      'Wallet must be a valid Robinhood Chain address (0x followed by 40 hex characters)'
+    );
+    err.status = 400;
+    throw err;
+  }
+  return w.toLowerCase();
+}
+
 /**
  * Admin key check for destructive actions.
  *
@@ -105,6 +132,10 @@ module.exports = {
   RESERVED,
   normalizeHandle,
   assertValidHandle,
+  assertValidRobinhoodWallet,
   isDemoAgent,
   requireAdmin,
+  ROBINHOOD_CHAIN_ID,
+  ROBINHOOD_CHAIN_NAME,
+  EVM_ADDRESS_RE,
 };

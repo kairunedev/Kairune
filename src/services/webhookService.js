@@ -20,7 +20,14 @@ function nowIso() {
 }
 
 // Event names the platform can emit. '*' subscribes to all of them.
-const EVENTS = Object.freeze(['spend.approved', 'spend.blocked']);
+//   spend.approved     — a spend was authorized within its ceiling
+//   spend.blocked      — a spend was denied (ceiling exceeded / no budget)
+//   agent.tier_changed — an agent's trust tier moved up or down after a rescore
+const EVENTS = Object.freeze([
+  'spend.approved',
+  'spend.blocked',
+  'agent.tier_changed',
+]);
 
 // Delivery tuning. Kept short: on serverless the spend request awaits delivery,
 // so a slow consumer must not stall the caller for long.
