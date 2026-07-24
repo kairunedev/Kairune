@@ -18,6 +18,7 @@
  *   POST   /api/permissions/:pid/revoke       revoke permission
  *   GET    /api/permissions/:pid/budget        remaining spend budget
  *   GET    /api/permissions/:pid/spends        spend history
+ *   POST   /api/permissions/:pid/spends/preview dry-run a spend (no charge, go/no-go)
  *   POST   /api/permissions/:pid/spends        authorize a spend (enforces ceiling)
  *   POST   /api/webhooks                        register a spend-event webhook
  *   GET    /api/webhooks                        list webhooks
@@ -94,6 +95,7 @@ router.get('/meta', (req, res) => {
     verify_endpoint: '/api/verify',
     trust_sources_endpoint: '/api/agents/:id/trust-sources',
     wallet_lookup_endpoint: '/api/wallets/:wallet',
+    spend_preview_endpoint: '/api/permissions/:pid/spends/preview',
     idempotency_header: 'Idempotency-Key',
     idempotency_max_key_length: spendService.MAX_IDEMPOTENCY_KEY_LEN,
     diversity_target_issuers: issuerDiversity.DIVERSITY_TARGET_ISSUERS,
@@ -610,6 +612,23 @@ router.get(
         limit: parseInt(req.query.limit, 10) || 50,
       }),
     });
+  })
+);
+
+// Dry-run a spend: same checks as a real charge, but nothing is written and no
+// budget is consumed. Public + read-only (like /budget) so a payment rail or
+// agent can get a go / no-go signal before committing. Returns 200 always with
+// `allowed` + a machine-readable `reason` when blocked; a bad amount/key is 400.
+router.post(
+  '/permissions/:pid/spends/preview',
+  wrap(async (req, res) => {
+    requireFields(req.body, ['amount']);
+    const idempotencyKey = req.get('Idempotency-Key') || req.body.idempotency_key;
+    const result = await spendService.previewSpend(req.params.pid, {
+      amount: req.body.amount,
+      idempotencyKey,
+    });
+    res.json(result);
   })
 );
 

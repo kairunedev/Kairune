@@ -172,3 +172,121 @@ test('normalizeIdempotencyKey rejects malformed keys', () => {
     (e) => e.status === 400
   );
 });
+
+test('previewSpend: allows a charge that fits and never touches the budget', async () => {
+  const { permId } = await seedPermission({ ceiling: 100, period: 'day' });
+  const now = Date.now();
+
+  const preview = await spendService.previewSpend(permId, { amount: 40 }, { nowMs: now });
+  assert.strictEqual(preview.allowed, true);
+  assert.strictEqual(preview.reason, null);
+  assert.strictEqual(preview.requested, 40);
+  assert.strictEqual(preview.budget.used, 0, 'preview must not consume budget');
+  assert.strictEqual(preview.budget.remaining, 100);
+
+  // No spend row was written by the preview.
+  const spends = await spendService.listSpends(permId);
+  assert.strictEqual(spends.length, 0);
+});
+
+test('previewSpend: blocks an over-budget charge with ceiling_exceeded', async () => {
+  const { permId } = await seedPermission({ ceiling: 100, period: 'day' });
+  const now = Date.now();
+  await spendService.authorizeSpend(permId, { amount: 80 }, { nowMs: now });
+
+  const preview = await spendService.previewSpend(permId, { amount: 40 }, { nowMs: now });
+  assert.strictEqual(preview.allowed, false);
+  assert.strictEqual(preview.reason, 'ceiling_exceeded');
+  assert.strictEqual(preview.budget.used, 80);
+  assert.strictEqual(preview.budget.remaining, 20);
+});
+
+test('previewSpend: preview agrees with the real charge decision', async () => {
+  const { permId } = await seedPermission({ ceiling: 100, period: 'day' });
+  const now = Date.now();
+
+  // Preview says allowed, then the real charge succeeds.
+  const p1 = await spendService.previewSpend(permId, { amount: 100 }, { nowMs: now });
+  assert.strictEqual(p1.allowed, true);
+  await spendService.authorizeSpend(permId, { amount: 100 }, { nowMs: now });
+
+  // Now full: preview says blocked, and a real charge would indeed throw 409.
+  const p2 = await spendService.previewSpend(permId, { amount: 1 }, { nowMs: now });
+  assert.strictEqual(p2.allowed, false);
+  assert.strictEqual(p2.reason, 'ceiling_exceeded');
+  await assert.rejects(
+    () => spendService.authorizeSpend(permId, { amount: 1 }, { nowMs: now }),
+    (err) => err.status === 409
+  );
+});
+
+test('previewSpend: blocks when the permission is revoked', async () => {
+  const { permId } = await seedPermission({ ceiling: 100, period: 'day' });
+  const db = await getDb();
+  await db.execute({
+    sql: `UPDATE permissions SET status = 'revoked' WHERE id = ?`,
+    args: [permId],
+  });
+
+  const preview = await spendService.previewSpend(permId, { amount: 10 });
+  assert.strictEqual(preview.allowed, false);
+  assert.strictEqual(preview.reason, 'permission_revoked');
+});
+
+test('previewSpend: blocks when the agent is suspended', async () => {
+  const { agentId, permId } = await seedPermission({ ceiling: 100, period: 'day' });
+  const db = await getDb();
+  await db.execute({
+    sql: `UPDATE agents SET status = 'suspended' WHERE id = ?`,
+    args: [agentId],
+  });
+
+  const preview = await spendService.previewSpend(permId, { amount: 10 });
+  assert.strictEqual(preview.allowed, false);
+  assert.strictEqual(preview.reason, 'agent_suspended');
+});
+
+test('previewSpend: a known idempotency key previews as an allowed replay', async () => {
+  const { permId } = await seedPermission({ ceiling: 50, period: 'day' });
+  const now = Date.now();
+
+  const charged = await spendService.authorizeSpend(
+    permId,
+    { amount: 50, idempotencyKey: 'seen-key' },
+    { nowMs: now }
+  );
+
+  // Budget is now full, but the same key would replay (not re-charge), so the
+  // preview reports allowed + idempotent_replay rather than ceiling_exceeded.
+  const preview = await spendService.previewSpend(
+    permId,
+    { amount: 50, idempotencyKey: 'seen-key' },
+    { nowMs: now }
+  );
+  assert.strictEqual(preview.allowed, true);
+  assert.strictEqual(preview.idempotent_replay, true);
+  assert.strictEqual(preview.spend.id, charged.spend.id);
+
+  // Still exactly one spend row — the preview charged nothing.
+  const spends = await spendService.listSpends(permId);
+  assert.strictEqual(spends.length, 1);
+});
+
+test('previewSpend: rejects a non-positive amount with 400', async () => {
+  const { permId } = await seedPermission({ ceiling: 100, period: 'day' });
+  await assert.rejects(
+    () => spendService.previewSpend(permId, { amount: 0 }),
+    (e) => e.status === 400
+  );
+  await assert.rejects(
+    () => spendService.previewSpend(permId, { amount: -5 }),
+    (e) => e.status === 400
+  );
+});
+
+test('previewSpend: unknown permission throws 404', async () => {
+  await assert.rejects(
+    () => spendService.previewSpend('does-not-exist', { amount: 10 }),
+    (e) => e.status === 404
+  );
+});

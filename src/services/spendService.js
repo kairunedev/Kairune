@@ -352,6 +352,103 @@ async function authorizeSpend(
 }
 
 /**
+ * Preview whether a spend would be authorized — WITHOUT charging.
+ *
+ * Runs the exact same checks as {@link authorizeSpend} (amount validity,
+ * permission + agent active, budget headroom, idempotent replay) but never
+ * writes a spend, touches the budget, or emits any event. Built for payment
+ * rails and agents that want a go / no-go signal before committing a charge.
+ *
+ * Always resolves (never throws for a business rejection): the result carries
+ * `allowed` plus a machine-readable `reason` when blocked, so a caller can
+ * branch on it directly. A malformed amount or idempotency key still throws a
+ * 400, matching authorizeSpend's input contract.
+ *
+ * @param {string} permissionId
+ * @param {{amount:number, idempotencyKey?:string}} input
+ * @param {{nowMs?:number}} [opts]
+ * @returns {Promise<{allowed:boolean, reason:string|null, requested:number, budget:object, idempotent_replay?:boolean, spend?:object}>}
+ */
+async function previewSpend(
+  permissionId,
+  { amount, idempotencyKey = null },
+  opts = {}
+) {
+  const db = await getDb();
+
+  const value = Number(amount);
+  if (!Number.isFinite(value) || value <= 0) {
+    const err = new Error('Amount must be a positive number');
+    err.status = 400;
+    throw err;
+  }
+
+  // Validate the key shape up front (throws 400 on malformed), same as a spend.
+  const key = normalizeIdempotencyKey(idempotencyKey);
+
+  const permRes = await db.execute({
+    sql: `SELECT * FROM permissions WHERE id = ?`,
+    args: [permissionId],
+  });
+  const permission = permRes.rows[0];
+  if (!permission) {
+    const err = new Error('Permission not found');
+    err.status = 404;
+    throw err;
+  }
+
+  const ceiling = Number(permission.ceiling);
+  const used = await usedInWindow(permissionId, permission.period, opts.nowMs);
+  const remaining = Math.max(0, ceiling - used);
+  const budget = {
+    permission_id: permissionId,
+    agent_id: permission.agent_id,
+    category: permission.category,
+    period: permission.period,
+    status: permission.status,
+    ceiling,
+    used,
+    remaining,
+  };
+
+  // Idempotent replay: a spend already exists for this key, so a real request
+  // would return that original spend (allowed, no new charge).
+  if (key) {
+    const replay = await findSpendByKey(permissionId, key);
+    if (replay) {
+      return {
+        allowed: true,
+        reason: null,
+        requested: value,
+        budget,
+        idempotent_replay: true,
+        spend: replay,
+      };
+    }
+  }
+
+  // Same rejection order as authorizeSpend so a preview never disagrees with
+  // the real decision that would follow.
+  if (permission.status !== 'active') {
+    return { allowed: false, reason: 'permission_revoked', requested: value, budget };
+  }
+
+  const agent = await agentService.getAgent(permission.agent_id);
+  if (!agent) {
+    return { allowed: false, reason: 'agent_not_found', requested: value, budget };
+  }
+  if (agent.status !== 'active') {
+    return { allowed: false, reason: 'agent_suspended', requested: value, budget };
+  }
+
+  if (value > remaining) {
+    return { allowed: false, reason: 'ceiling_exceeded', requested: value, budget };
+  }
+
+  return { allowed: true, reason: null, requested: value, budget };
+}
+
+/**
  * Current budget summary for a permission (no charge applied).
  * @param {string} permissionId
  * @param {{nowMs?:number}} [opts]
@@ -415,6 +512,7 @@ async function listFeed({ limit = 20 } = {}) {
 
 module.exports = {
   authorizeSpend,
+  previewSpend,
   budgetSummary,
   listSpends,
   listFeed,

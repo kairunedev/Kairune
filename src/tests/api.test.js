@@ -319,6 +319,58 @@ test('spend: authorize within ceiling, then reject over budget', async () => {
   assert.strictEqual(spends.body.spends[0].amount, 10);
 });
 
+test('spend preview: dry-run reports go/no-go without charging', async () => {
+  const id = await trustedAgent('spend-preview', '0x5000000000000000000000000000000000000011');
+  const grant = await req('POST', '/api/agents/' + id + '/permissions', {
+    category: 'compute',
+    ceiling: 100,
+    period: 'day',
+  });
+  const pid = grant.body.permission.id;
+  const ceiling = grant.body.permission.ceiling;
+
+  // Preview a charge that fits: allowed, and budget untouched (used stays 0).
+  const ok = await req('POST', '/api/permissions/' + pid + '/spends/preview', {
+    amount: 10,
+  });
+  assert.strictEqual(ok.status, 200);
+  assert.strictEqual(ok.body.allowed, true);
+  assert.strictEqual(ok.body.reason, null);
+  assert.strictEqual(ok.body.budget.used, 0);
+
+  // Preview an over-budget charge: blocked with a machine-readable reason.
+  const over = await req('POST', '/api/permissions/' + pid + '/spends/preview', {
+    amount: ceiling + 1,
+  });
+  assert.strictEqual(over.status, 200);
+  assert.strictEqual(over.body.allowed, false);
+  assert.strictEqual(over.body.reason, 'ceiling_exceeded');
+
+  // The preview charged nothing: no spend history and full budget remain.
+  const spends = await req('GET', '/api/permissions/' + pid + '/spends');
+  assert.strictEqual(spends.body.spends.length, 0);
+  const budget = await req('GET', '/api/permissions/' + pid + '/budget');
+  assert.strictEqual(budget.body.budget.used, 0);
+  assert.strictEqual(budget.body.budget.remaining, ceiling);
+});
+
+test('spend preview: bad amount → 400, unknown permission → 404', async () => {
+  const id = await trustedAgent('spend-preview-err', '0x5000000000000000000000000000000000000012');
+  const grant = await req('POST', '/api/agents/' + id + '/permissions', {
+    category: 'compute',
+    ceiling: 50,
+  });
+  const pid = grant.body.permission.id;
+
+  const bad = await req('POST', '/api/permissions/' + pid + '/spends/preview', { amount: 0 });
+  assert.strictEqual(bad.status, 400);
+
+  const missing = await req('POST', '/api/permissions/does-not-exist/spends/preview', {
+    amount: 5,
+  });
+  assert.strictEqual(missing.status, 404);
+});
+
 test('spend: history lists accepted charges, most recent first', async () => {
   const id = await trustedAgent('spend-05', '0x5000000000000000000000000000000000000005');
   const grant = await req('POST', '/api/agents/' + id + '/permissions', {
