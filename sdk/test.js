@@ -192,6 +192,32 @@ async function resolveTarget() {
         'spend() idempotent replay does not double-charge',
         replay.approved && replay.budget.used === usedAfterFirst
       );
+
+      // previewSpend(): dry-run must not touch the budget and must agree with
+      // the real decision. Reuse the same permission/fixture from above.
+      const usedBeforePreview = replay.approved ? replay.budget.used : first.budget.used;
+
+      const okPreview = await k.previewSpend(pid, { amount: 0.01 });
+      assert('previewSpend() allows a fitting charge', okPreview.allowed === true);
+      assert('previewSpend() allowed reason is null', okPreview.reason === null);
+      assert(
+        'previewSpend() does not consume budget',
+        okPreview.budget.used === usedBeforePreview
+      );
+
+      const overPreview = await k.previewSpend(pid, { amount: 1000 });
+      assert('previewSpend() blocks over-budget', overPreview.allowed === false);
+      assert(
+        'previewSpend() over-budget reason is ceiling_exceeded',
+        overPreview.reason === 'ceiling_exceeded'
+      );
+
+      // A known idempotency key previews as an allowed replay, not a new charge.
+      const replayPreview = await k.previewSpend(pid, { amount: 0.01, idempotencyKey: key });
+      assert(
+        'previewSpend() reports idempotent replay for a known key',
+        replayPreview.allowed === true && replayPreview.idempotent_replay === true
+      );
     }
     if (adminKey) {
       const ak = new Kairune({ adminKey, baseUrl: base });

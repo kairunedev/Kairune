@@ -13,6 +13,10 @@
  * const agent = await k.getAgent('voyager-07')
  * console.log(agent.score, agent.tier)
  *
+ * // Check whether a spend would go through — without charging (dry-run)
+ * const check = await k.previewSpend(permissionId, { amount: 30 })
+ * if (!check.allowed) console.log('would be blocked:', check.reason)
+ *
  * // Authorize a spend (enforces ceiling)
  * const result = await k.spend(permissionId, { amount: 30 })
  * if (result.approved) console.log('approved, remaining:', result.budget.remaining)
@@ -96,6 +100,28 @@ export interface SpendBlocked {
     remaining: number
     period: string
   }
+}
+
+/** Why a previewed spend would be blocked. `null` when it would be allowed. */
+export type SpendPreviewReason =
+  | 'ceiling_exceeded'
+  | 'permission_revoked'
+  | 'agent_suspended'
+  | 'agent_not_found'
+
+export interface SpendPreview {
+  /** Whether a real charge with these inputs would be authorized right now. */
+  allowed: boolean
+  /** Machine-readable rejection reason, or `null` when allowed. */
+  reason: SpendPreviewReason | null
+  /** The amount that was previewed. */
+  requested: number
+  /** Current budget for the permission (unchanged — preview never charges). */
+  budget: Budget
+  /** True when the idempotency key already charged, so a real call would replay. */
+  idempotent_replay?: boolean
+  /** The original spend, present only on an idempotent replay. */
+  spend?: Spend
 }
 
 export interface Attestation {
@@ -375,6 +401,35 @@ export class Kairune {
       }
       throw e
     }
+  }
+
+  /**
+   * Preview a spend WITHOUT charging — a go / no-go dry-run.
+   *
+   * Runs the exact same checks as {@link spend} (budget headroom, permission
+   * status, agent status, idempotent replay) but writes nothing and consumes
+   * no budget. Use it to decide before committing a charge.
+   *
+   * Always resolves with `{ allowed, reason, budget }`; `reason` is a
+   * machine-readable string when blocked (e.g. `'ceiling_exceeded'`) and
+   * `null` when allowed. A malformed amount or idempotency key still throws.
+   *
+   * Note: preview is a point-in-time read, not a reservation — the budget can
+   * change between preview and charge. Pair it with an `idempotencyKey` on the
+   * real {@link spend} call to charge exactly once.
+   */
+  async previewSpend(
+    permissionId: string,
+    input: { amount: number; idempotencyKey?: string }
+  ): Promise<SpendPreview> {
+    const { idempotencyKey, ...body } = input
+    const headers = idempotencyKey ? { 'idempotency-key': idempotencyKey } : undefined
+    return this.request<SpendPreview>(
+      'POST',
+      `/permissions/${permissionId}/spends/preview`,
+      body,
+      headers
+    )
   }
 
   /** Suspend or activate an agent. */

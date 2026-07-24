@@ -13,6 +13,10 @@
  * const agent = await k.getAgent('voyager-07')
  * console.log(agent.score, agent.tier)
  *
+ * // Check whether a spend would go through — without charging (dry-run)
+ * const check = await k.previewSpend(permissionId, { amount: 30 })
+ * if (!check.allowed) console.log('would be blocked:', check.reason)
+ *
  * // Authorize a spend (enforces ceiling)
  * const result = await k.spend(permissionId, { amount: 30 })
  * if (result.approved) console.log('approved, remaining:', result.budget.remaining)
@@ -85,6 +89,22 @@ interface SpendBlocked {
         remaining: number;
         period: string;
     };
+}
+/** Why a previewed spend would be blocked. `null` when it would be allowed. */
+type SpendPreviewReason = 'ceiling_exceeded' | 'permission_revoked' | 'agent_suspended' | 'agent_not_found';
+interface SpendPreview {
+    /** Whether a real charge with these inputs would be authorized right now. */
+    allowed: boolean;
+    /** Machine-readable rejection reason, or `null` when allowed. */
+    reason: SpendPreviewReason | null;
+    /** The amount that was previewed. */
+    requested: number;
+    /** Current budget for the permission (unchanged — preview never charges). */
+    budget: Budget;
+    /** True when the idempotency key already charged, so a real call would replay. */
+    idempotent_replay?: boolean;
+    /** The original spend, present only on an idempotent replay. */
+    spend?: Spend;
 }
 interface Attestation {
     id: string;
@@ -243,6 +263,25 @@ declare class Kairune {
         note?: string;
         idempotencyKey?: string;
     }): Promise<SpendResult | SpendBlocked>;
+    /**
+     * Preview a spend WITHOUT charging — a go / no-go dry-run.
+     *
+     * Runs the exact same checks as {@link spend} (budget headroom, permission
+     * status, agent status, idempotent replay) but writes nothing and consumes
+     * no budget. Use it to decide before committing a charge.
+     *
+     * Always resolves with `{ allowed, reason, budget }`; `reason` is a
+     * machine-readable string when blocked (e.g. `'ceiling_exceeded'`) and
+     * `null` when allowed. A malformed amount or idempotency key still throws.
+     *
+     * Note: preview is a point-in-time read, not a reservation — the budget can
+     * change between preview and charge. Pair it with an `idempotencyKey` on the
+     * real {@link spend} call to charge exactly once.
+     */
+    previewSpend(permissionId: string, input: {
+        amount: number;
+        idempotencyKey?: string;
+    }): Promise<SpendPreview>;
     /** Suspend or activate an agent. */
     setAgentStatus(agentId: string, status: 'active' | 'suspended'): Promise<Agent>;
     /** Delete an agent (admin key required). */
@@ -266,4 +305,4 @@ declare class Kairune {
     }>;
 }
 
-export { type Agent, type Attestation, type Budget, type FeedEvent, Kairune, KairuneError, type KairuneOptions, type Meta, type Permission, type Spend, type SpendBlocked, type SpendResult, type Stats, type WalletProfile, type Webhook, Kairune as default };
+export { type Agent, type Attestation, type Budget, type FeedEvent, Kairune, KairuneError, type KairuneOptions, type Meta, type Permission, type Spend, type SpendBlocked, type SpendPreview, type SpendPreviewReason, type SpendResult, type Stats, type WalletProfile, type Webhook, Kairune as default };

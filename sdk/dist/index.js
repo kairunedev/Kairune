@@ -192,6 +192,31 @@ var Kairune = class {
       throw e;
     }
   }
+  /**
+   * Preview a spend WITHOUT charging — a go / no-go dry-run.
+   *
+   * Runs the exact same checks as {@link spend} (budget headroom, permission
+   * status, agent status, idempotent replay) but writes nothing and consumes
+   * no budget. Use it to decide before committing a charge.
+   *
+   * Always resolves with `{ allowed, reason, budget }`; `reason` is a
+   * machine-readable string when blocked (e.g. `'ceiling_exceeded'`) and
+   * `null` when allowed. A malformed amount or idempotency key still throws.
+   *
+   * Note: preview is a point-in-time read, not a reservation — the budget can
+   * change between preview and charge. Pair it with an `idempotencyKey` on the
+   * real {@link spend} call to charge exactly once.
+   */
+  async previewSpend(permissionId, input) {
+    const { idempotencyKey, ...body } = input;
+    const headers = idempotencyKey ? { "idempotency-key": idempotencyKey } : void 0;
+    return this.request(
+      "POST",
+      `/permissions/${permissionId}/spends/preview`,
+      body,
+      headers
+    );
+  }
   /** Suspend or activate an agent. */
   async setAgentStatus(agentId, status) {
     const res = await this.request("PATCH", `/agents/${agentId}/status`, { status });
