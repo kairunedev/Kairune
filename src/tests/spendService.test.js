@@ -290,3 +290,45 @@ test('previewSpend: unknown permission throws 404', async () => {
     (e) => e.status === 404
   );
 });
+
+test('resolveAlertThreshold defaults to 0.8 and honours a valid env override', () => {
+  const prev = process.env.SPEND_ALERT_THRESHOLD;
+  try {
+    delete process.env.SPEND_ALERT_THRESHOLD;
+    assert.strictEqual(spendService.resolveAlertThreshold(), 0.8);
+
+    process.env.SPEND_ALERT_THRESHOLD = '0.9';
+    assert.strictEqual(spendService.resolveAlertThreshold(), 0.9);
+
+    // Out-of-range / garbage falls back to the default.
+    process.env.SPEND_ALERT_THRESHOLD = '1.5';
+    assert.strictEqual(spendService.resolveAlertThreshold(), 0.8);
+    process.env.SPEND_ALERT_THRESHOLD = 'nope';
+    assert.strictEqual(spendService.resolveAlertThreshold(), 0.8);
+  } finally {
+    if (prev === undefined) delete process.env.SPEND_ALERT_THRESHOLD;
+    else process.env.SPEND_ALERT_THRESHOLD = prev;
+  }
+});
+
+test('spend.threshold is logged to the activity feed once per window crossing', async () => {
+  const { agentId, permId } = await seedPermission({ ceiling: 100, period: 'day' });
+  const handle = 'u-' + agentId.slice(0, 8); // matches seedPermission's handle
+  const now = Date.now();
+
+  // Below the 80% line — no threshold row.
+  await spendService.authorizeSpend(permId, { amount: 50 }, { nowMs: now });
+  // Crosses 80% (50 → 85) — one threshold row.
+  await spendService.authorizeSpend(permId, { amount: 35 }, { nowMs: now });
+  // Already past the line (85 → 95) — must not log again.
+  await spendService.authorizeSpend(permId, { amount: 10 }, { nowMs: now });
+
+  // Scope to this agent's handle — the shared in-memory feed also holds events
+  // from other tests, some of which legitimately cross 80% too.
+  const feed = await spendService.listFeed({ limit: 200 });
+  const thresholds = feed.filter(
+    (e) => e.event === 'spend.threshold' && e.agent_handle === handle
+  );
+  assert.strictEqual(thresholds.length, 1, 'exactly one threshold crossing logged');
+  assert.strictEqual(thresholds[0].reason, 'threshold_80pct');
+});

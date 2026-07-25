@@ -22,10 +22,12 @@ function nowIso() {
 // Event names the platform can emit. '*' subscribes to all of them.
 //   spend.approved     — a spend was authorized within its ceiling
 //   spend.blocked      — a spend was denied (ceiling exceeded / no budget)
+//   spend.threshold    — an approved spend pushed budget past the alert line
 //   agent.tier_changed — an agent's trust tier moved up or down after a rescore
 const EVENTS = Object.freeze([
   'spend.approved',
   'spend.blocked',
+  'spend.threshold',
   'agent.tier_changed',
 ]);
 

@@ -117,7 +117,7 @@ interface Attestation {
     verified?: boolean;
 }
 interface FeedEvent {
-    event: 'spend.approved' | 'spend.blocked';
+    event: 'spend.approved' | 'spend.blocked' | 'spend.threshold';
     agent_handle: string;
     amount: number;
     ceiling: number;

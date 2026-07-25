@@ -193,3 +193,36 @@ test('events filter: a webhook only gets its subscribed event', async () => {
 
   await webhookService.deleteWebhook(webhook.id);
 });
+
+test('spend.threshold fires once when a spend crosses the alert line', async () => {
+  received.length = 0;
+  const { webhook } = await webhookService.createWebhook({
+    url: receiverUrl,
+    events: ['spend.threshold'],
+  });
+
+  // Default alert line is 80% of the ceiling.
+  const { permId } = await seedPermission({ ceiling: 100, period: 'day' });
+  const now = Date.now();
+
+  // 70% used: below the line — no threshold event yet.
+  await spendService.authorizeSpend(permId, { amount: 70 }, { nowMs: now });
+  // 70% → 90%: crosses 80% — exactly one threshold event.
+  await spendService.authorizeSpend(permId, { amount: 20 }, { nowMs: now });
+  // 90% → 95%: already past the line — must NOT fire again.
+  await spendService.authorizeSpend(permId, { amount: 5 }, { nowMs: now });
+
+  await waitForDeliveries(1);
+  await new Promise((r) => setTimeout(r, 150));
+
+  assert.strictEqual(received.length, 1, 'threshold fires exactly once per window');
+  assert.strictEqual(received[0].event, 'spend.threshold');
+  const data = received[0].body.data;
+  assert.strictEqual(data.permission_id, permId);
+  assert.strictEqual(data.ceiling, 100);
+  assert.strictEqual(data.used, 90, 'reports usage at the crossing');
+  assert.strictEqual(data.threshold, 0.8);
+  assert.ok(Math.abs(data.utilization - 0.9) < 1e-9);
+
+  await webhookService.deleteWebhook(webhook.id);
+});

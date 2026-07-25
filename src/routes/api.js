@@ -96,6 +96,7 @@ router.get('/meta', (req, res) => {
     trust_sources_endpoint: '/api/agents/:id/trust-sources',
     wallet_lookup_endpoint: '/api/wallets/:wallet',
     spend_preview_endpoint: '/api/permissions/:pid/spends/preview',
+    spend_alert_threshold: spendService.resolveAlertThreshold(),
     idempotency_header: 'Idempotency-Key',
     idempotency_max_key_length: spendService.MAX_IDEMPOTENCY_KEY_LEN,
     diversity_target_issuers: issuerDiversity.DIVERSITY_TARGET_ISSUERS,

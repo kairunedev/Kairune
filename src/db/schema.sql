@@ -172,8 +172,8 @@ CREATE INDEX IF NOT EXISTS idx_webhook_deliveries_hook ON webhook_deliveries(web
 -- ---------------------------------------------------------------------------
 CREATE TABLE IF NOT EXISTS spend_events (
   id            TEXT PRIMARY KEY,              -- uuid
-  event         TEXT NOT NULL                  -- spend.approved | spend.blocked
-                  CHECK (event IN ('spend.approved', 'spend.blocked')),
+  event         TEXT NOT NULL                  -- spend.approved | blocked | threshold
+                  CHECK (event IN ('spend.approved', 'spend.blocked', 'spend.threshold')),
   agent_id      TEXT,                          -- agent that attempted the spend
   agent_handle  TEXT,                          -- denormalised handle for display
   amount        REAL NOT NULL DEFAULT 0,       -- requested / approved amount

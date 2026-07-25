@@ -98,7 +98,7 @@ async function emitSpendEvent(event, data) {
  * This powers the landing-page live feed. It is best-effort: any failure is
  * swallowed so logging can never block or fail a spend authorization. No PII
  * is stored — only the agent handle, amount, ceiling, and decision.
- * @param {'spend.approved'|'spend.blocked'} event
+ * @param {'spend.approved'|'spend.blocked'|'spend.threshold'} event
  * @param {{agent_id?:string, agent_handle?:string, amount:number, ceiling?:number, period?:string, reason?:string, createdAt?:string}} data
  * @returns {Promise<void>}
  */
@@ -132,6 +132,15 @@ const PERIOD_MS = Object.freeze({
   week: 7 * 86_400_000,
   month: 30 * 86_400_000,
 });
+
+// Fraction of the ceiling at which an approved spend emits a `spend.threshold`
+// warning, letting operators top up before the agent gets blocked. Overridable
+// via SPEND_ALERT_THRESHOLD (a value in (0,1), e.g. 0.9 for 90%).
+function resolveAlertThreshold() {
+  const raw = Number(process.env.SPEND_ALERT_THRESHOLD);
+  if (Number.isFinite(raw) && raw > 0 && raw < 1) return raw;
+  return 0.8;
+}
 
 /**
  * Start of the current rolling window for a period, as an ISO timestamp.
@@ -321,13 +330,14 @@ async function authorizeSpend(
     throw e;
   }
 
+  const usedAfter = used + value;
   await emitSpendEvent('spend.approved', {
     permission_id: permissionId,
     agent_id: permission.agent_id,
     spend_id: spend.id,
     amount: value,
     ceiling,
-    used: used + value,
+    used: usedAfter,
     remaining: remaining - value,
     period: permission.period,
   });
@@ -339,6 +349,38 @@ async function authorizeSpend(
     period: permission.period,
     createdAt: spend.created_at,
   });
+
+  // Budget threshold alert: fire once, on the spend that pushes utilization
+  // across the alert line (e.g. 80%). Computed from before/after usage so it
+  // needs no stored state and never double-fires within a window. Lets an
+  // operator top up or raise the ceiling before the agent starts getting
+  // blocked. Best-effort, like the other notifications — never blocks a spend.
+  if (ceiling > 0) {
+    const threshold = resolveAlertThreshold();
+    const line = ceiling * threshold;
+    if (used < line && usedAfter >= line) {
+      await emitSpendEvent('spend.threshold', {
+        permission_id: permissionId,
+        agent_id: permission.agent_id,
+        spend_id: spend.id,
+        ceiling,
+        used: usedAfter,
+        remaining: remaining - value,
+        period: permission.period,
+        threshold,
+        utilization: usedAfter / ceiling,
+      });
+      await recordEvent('spend.threshold', {
+        agent_id: permission.agent_id,
+        agent_handle: agent.handle,
+        amount: value,
+        ceiling,
+        period: permission.period,
+        reason: `threshold_${Math.round(threshold * 100)}pct`,
+        createdAt: spend.created_at,
+      });
+    }
+  }
 
   return {
     spend,
@@ -521,6 +563,7 @@ module.exports = {
   windowStart,
   normalizeIdempotencyKey,
   findSpendByKey,
+  resolveAlertThreshold,
   PERIOD_MS,
   MAX_IDEMPOTENCY_KEY_LEN,
 };

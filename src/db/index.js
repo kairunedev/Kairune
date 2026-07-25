@@ -107,6 +107,56 @@ async function initSchema(c) {
 
   await ensureAttestationColumns(c);
   await ensureSpendColumns(c);
+  await ensureSpendEventsConstraint(c);
+}
+
+/**
+ * Widen the spend_events.event CHECK constraint on databases created before
+ * `spend.threshold` existed. CREATE TABLE IF NOT EXISTS won't touch an existing
+ * table and SQLite can't ALTER a CHECK, so an old table is rebuilt in place:
+ * create the new-shape table, copy rows, swap. The `event` value is always
+ * code-controlled (never user input), so widening is safe. No-op when the
+ * current definition already allows spend.threshold.
+ * @param {import('@libsql/client').Client} c
+ */
+async function ensureSpendEventsConstraint(c) {
+  const res = await c.execute(
+    `SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'spend_events'`
+  );
+  const ddl = res.rows[0] && res.rows[0].sql;
+  // Already migrated (or freshly created with the new schema) — nothing to do.
+  if (!ddl || ddl.includes('spend.threshold')) return;
+
+  // Rebuild the table with the widened constraint, preserving existing rows.
+  await c.execute('PRAGMA foreign_keys = OFF');
+  try {
+    await c.execute(`
+      CREATE TABLE spend_events_new (
+        id            TEXT PRIMARY KEY,
+        event         TEXT NOT NULL
+                        CHECK (event IN ('spend.approved', 'spend.blocked', 'spend.threshold')),
+        agent_id      TEXT,
+        agent_handle  TEXT,
+        amount        REAL NOT NULL DEFAULT 0,
+        ceiling       REAL,
+        period        TEXT,
+        reason        TEXT,
+        created_at    TEXT NOT NULL
+      )`);
+    await c.execute(
+      `INSERT INTO spend_events_new
+         (id, event, agent_id, agent_handle, amount, ceiling, period, reason, created_at)
+       SELECT id, event, agent_id, agent_handle, amount, ceiling, period, reason, created_at
+       FROM spend_events`
+    );
+    await c.execute('DROP TABLE spend_events');
+    await c.execute('ALTER TABLE spend_events_new RENAME TO spend_events');
+    await c.execute(
+      'CREATE INDEX IF NOT EXISTS idx_spend_events_created ON spend_events(created_at)'
+    );
+  } finally {
+    await c.execute('PRAGMA foreign_keys = ON');
+  }
 }
 
 /**
