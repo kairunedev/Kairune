@@ -63,3 +63,16 @@ allows or denies locally. No admin key needed (it's a public read).
 # grab a wallet from GET /api/agents
 WALLET=0x71a2c4e83b90ff01a2b3c4d5e6f70819a2b39f0c npx tsx examples/03-wallet-gate.ts
 ```
+
+### `04-spend-preview.ts`
+
+The preview pattern: dry-run a charge with `previewSpend` to get a go/no-go
+signal **before** committing. Runs the same checks as a real spend but writes
+nothing and consumes no budget, so an agent can branch on the reason
+(`ceiling_exceeded`, `permission_revoked`, `agent_suspended`) or pick a cheaper
+path. Then commit the real charge with an idempotency key. Preview is a
+point-in-time read, not a reservation — the real `spend` is always authoritative.
+
+```bash
+KAIRUNE_PERMISSION_ID=<id> COST=5 npx tsx examples/04-spend-preview.ts
+```

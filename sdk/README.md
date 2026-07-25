@@ -41,6 +41,10 @@ await k.feed(10)          // live spend decisions
 await k.listAgents()      // leaderboard
 await k.getAgent(id)      // single agent + score
 await k.getBudget(pid)    // remaining budget
+
+// Dry-run a charge — go/no-go without spending anything
+const check = await k.previewSpend(pid, { amount: 30 })
+if (!check.allowed) console.log('would be blocked:', check.reason)
 ```
 
 ## Write operations (admin key required)
@@ -60,6 +64,12 @@ const { permission } = await k.grantPermission(agentId, {
   ceiling: 100,
   period: 'day'
 })
+
+// Preview first (optional): check before you charge, no budget consumed.
+// Preview is a point-in-time read, not a reservation — the real spend below
+// is always authoritative.
+const check = await k.previewSpend(permission.id, { amount: 30 })
+if (!check.allowed) return // e.g. check.reason === 'ceiling_exceeded'
 
 // Spend against it
 await k.spend(permission.id, { amount: 30, note: 'gpu-hours' })
