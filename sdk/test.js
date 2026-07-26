@@ -219,9 +219,41 @@ async function resolveTarget() {
         replayPreview.allowed === true && replayPreview.idempotent_replay === true
       );
     }
+
+    // velocity (burst) limit: a grant can add a max-spend-per-window cap on top
+    // of the period ceiling. Build a fresh fixture with a small burst cap and a
+    // large ceiling so only the velocity guard can trip.
+    const vAgent = await k.registerAgent({
+      handle: 'sdk-vel-' + Date.now(),
+      wallet: '0x' + (Date.now().toString(16) + 'c'.repeat(40)).slice(-40),
+    });
+    for (let i = 0; i < 30; i++) await k.attest(vAgent.id, { kind: 'task_completed' });
+    const vGrant = await k.grantPermission(vAgent.id, {
+      category: 'compute',
+      ceiling: 100000,
+      velocity_limit: 30,
+      velocity_window_s: 60,
+    });
+    assert('grantPermission() echoes velocity_limit', vGrant.permission.velocity_limit === 30);
+    assert('grantPermission() echoes velocity_window_s', vGrant.permission.velocity_window_s === 60);
+    const vpid = vGrant.permission.id;
+
+    const vFirst = await k.spend(vpid, { amount: 20 });
+    assert('spend() within burst cap approved', vFirst.approved === true);
+
+    // 20 → 35 within 60s exceeds the 30 cap → blocked (SpendBlocked, not thrown).
+    const vBurst = await k.spend(vpid, { amount: 15 });
+    assert('spend() over burst cap is blocked', vBurst.approved === false);
+
+    // preview agrees: same inputs would be blocked with velocity_exceeded.
+    const vPreview = await k.previewSpend(vpid, { amount: 15 });
+    assert('previewSpend() flags velocity_exceeded', vPreview.allowed === false && vPreview.reason === 'velocity_exceeded');
+    assert('preview budget exposes velocity_limit', vPreview.budget.velocity_limit === 30);
+
     if (adminKey) {
       const ak = new Kairune({ adminKey, baseUrl: base });
       await ak.deleteAgent(agent.id).catch(() => {});
+      await ak.deleteAgent(vAgent.id).catch(() => {});
     }
   } catch (e) {
     fail++; console.log(FAIL, 'spend() idempotency threw unexpectedly:', e.message);

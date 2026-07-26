@@ -97,6 +97,7 @@ router.get('/meta', (req, res) => {
     wallet_lookup_endpoint: '/api/wallets/:wallet',
     spend_preview_endpoint: '/api/permissions/:pid/spends/preview',
     spend_alert_threshold: spendService.resolveAlertThreshold(),
+    default_velocity_window_s: spendService.DEFAULT_VELOCITY_WINDOW_S,
     idempotency_header: 'Idempotency-Key',
     idempotency_max_key_length: spendService.MAX_IDEMPOTENCY_KEY_LEN,
     diversity_target_issuers: issuerDiversity.DIVERSITY_TARGET_ISSUERS,
@@ -564,6 +565,8 @@ router.post(
       ceiling: req.body.ceiling,
       period: req.body.period,
       granted_by: req.body.granted_by,
+      velocity_limit: req.body.velocity_limit,
+      velocity_window_s: req.body.velocity_window_s,
     });
     res.status(201).json({ permission });
   })
@@ -633,6 +636,9 @@ router.post(
   })
 );
 
+// Authorize a real charge. Enforces the period ceiling (409 when exceeded) and,
+// when the permission has one, a burst velocity cap (429 + a spend.velocity
+// webhook). Both rejections carry a `details` object describing the headroom.
 router.post(
   '/permissions/:pid/spends',
   wrap(async (req, res) => {

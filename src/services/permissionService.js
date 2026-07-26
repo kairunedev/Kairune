@@ -21,7 +21,10 @@ const VALID_PERIODS = ['day', 'week', 'month'];
  * @param {{category:string, ceiling:number, period?:string, granted_by?:string}} input
  * @returns {Promise<object>}
  */
-async function grantPermission(agentId, { category, ceiling, period = 'day', granted_by = null }) {
+async function grantPermission(
+  agentId,
+  { category, ceiling, period = 'day', granted_by = null, velocity_limit = null, velocity_window_s = null }
+) {
   const db = await getDb();
 
   const agent = await agentService.getAgent(agentId);
@@ -48,6 +51,32 @@ async function grantPermission(agentId, { category, ceiling, period = 'day', gra
     throw err;
   }
 
+  // Optional velocity (burst) limit: a max spend within a short rolling window,
+  // layered on top of the period ceiling to catch runaway/compromised agents.
+  // Omitted → NULL → no velocity limit (fully backward compatible).
+  let velLimit = null;
+  let velWindow = null;
+  if (velocity_limit !== null && velocity_limit !== undefined && velocity_limit !== '') {
+    velLimit = Number(velocity_limit);
+    if (!Number.isFinite(velLimit) || velLimit <= 0) {
+      const err = new Error('velocity_limit must be a positive number');
+      err.status = 400;
+      throw err;
+    }
+    if (velocity_window_s !== null && velocity_window_s !== undefined && velocity_window_s !== '') {
+      velWindow = Number(velocity_window_s);
+      if (!Number.isFinite(velWindow) || velWindow <= 0 || !Number.isInteger(velWindow)) {
+        const err = new Error('velocity_window_s must be a positive integer (seconds)');
+        err.status = 400;
+        throw err;
+      }
+    }
+  } else if (velocity_window_s !== null && velocity_window_s !== undefined && velocity_window_s !== '') {
+    const err = new Error('velocity_window_s requires velocity_limit to be set');
+    err.status = 400;
+    throw err;
+  }
+
   const maxCeiling = suggestedDailyCeiling(agent.score);
   if (maxCeiling === 0) {
     const err = new Error(
@@ -65,17 +94,20 @@ async function grantPermission(agentId, { category, ceiling, period = 'day', gra
     ceiling: finalCeiling,
     period,
     status: 'active',
+    velocity_limit: velLimit,
+    velocity_window_s: velLimit ? (velWindow || 60) : null,
     granted_by,
     created_at: nowIso(),
     revoked_at: null,
   };
 
   await db.execute({
-    sql: `INSERT INTO permissions (id, agent_id, category, ceiling, period, status, granted_by, created_at, revoked_at)
-          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    sql: `INSERT INTO permissions (id, agent_id, category, ceiling, period, status, velocity_limit, velocity_window_s, granted_by, created_at, revoked_at)
+          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
     args: [
       permission.id, permission.agent_id, permission.category, permission.ceiling,
-      permission.period, permission.status, permission.granted_by,
+      permission.period, permission.status, permission.velocity_limit,
+      permission.velocity_window_s, permission.granted_by,
       permission.created_at, permission.revoked_at,
     ],
   });

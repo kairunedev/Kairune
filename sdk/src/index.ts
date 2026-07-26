@@ -57,6 +57,10 @@ export interface Permission {
   ceiling: number
   period: 'day' | 'week' | 'month'
   status: 'active' | 'revoked'
+  /** Optional burst cap: max spend within `velocity_window_s`. `null` = no limit. */
+  velocity_limit?: number | null
+  /** Rolling window (seconds) for the velocity limit. `null` when no limit is set. */
+  velocity_window_s?: number | null
   granted_by: string | null
   created_at: string
 }
@@ -70,6 +74,10 @@ export interface Budget {
   ceiling: number
   used: number
   remaining: number
+  /** Burst cap (max spend within `velocity_window_s`), or `null` when none is set. */
+  velocity_limit?: number | null
+  /** Rolling window (seconds) for the velocity limit, or `null` when none is set. */
+  velocity_window_s?: number | null
 }
 
 export interface Spend {
@@ -93,18 +101,30 @@ export interface SpendResult {
 export interface SpendBlocked {
   approved: false
   error: string
+  /**
+   * Structured rejection detail. Shape depends on why the spend was blocked:
+   * a ceiling block carries `remaining`/`used`/`period`, a velocity (burst)
+   * block carries `velocity_limit`/`velocity_window_s`/`velocity_remaining`.
+   */
   details?: {
     requested: number
-    ceiling: number
-    used: number
-    remaining: number
-    period: string
+    // ceiling block
+    ceiling?: number
+    used?: number
+    remaining?: number
+    period?: string
+    // velocity block
+    velocity_limit?: number
+    velocity_window_s?: number
+    velocity_used?: number
+    velocity_remaining?: number
   }
 }
 
 /** Why a previewed spend would be blocked. `null` when it would be allowed. */
 export type SpendPreviewReason =
   | 'ceiling_exceeded'
+  | 'velocity_exceeded'
   | 'permission_revoked'
   | 'agent_suspended'
   | 'agent_not_found'
@@ -358,8 +378,24 @@ export class Kairune {
     return res.attestation
   }
 
-  /** Grant a spending permission to an agent. */
-  async grantPermission(agentId: string, input: { category: string; ceiling: number; period?: string }): Promise<{ permission: Permission; capped: boolean }> {
+  /**
+   * Grant a spending permission to an agent.
+   *
+   * Pass `velocity_limit` to add a burst cap on top of the period ceiling: at
+   * most that amount may be spent within `velocity_window_s` seconds (default
+   * 60). A spend that trips it is denied and fires a `spend.velocity` webhook,
+   * catching a runaway or compromised agent before it drains the whole budget.
+   */
+  async grantPermission(
+    agentId: string,
+    input: {
+      category: string
+      ceiling: number
+      period?: string
+      velocity_limit?: number
+      velocity_window_s?: number
+    }
+  ): Promise<{ permission: Permission; capped: boolean }> {
     return this.request('POST', `/agents/${agentId}/permissions`, input)
   }
 
@@ -369,8 +405,11 @@ export class Kairune {
   }
 
   /**
-   * Authorize a spend against a permission. Enforces the ceiling.
+   * Authorize a spend against a permission. Enforces the ceiling — and the
+   * burst (velocity) limit when the permission has one.
    * Returns `{ approved: true, spend, budget }` or `{ approved: false, error, details }`.
+   * A blocked spend (ceiling or velocity) resolves as `approved: false`; only
+   * an unexpected error throws.
    *
    * Pass `idempotencyKey` to make the charge safe to retry: a retry that reuses
    * the same key returns the original spend without charging the budget again
@@ -392,7 +431,9 @@ export class Kairune {
       )
       return { approved: true, ...res }
     } catch (e) {
-      if (e instanceof KairuneError && e.status === 409) {
+      // A blocked spend is a normal outcome, not an exception: 409 = ceiling
+      // exceeded / revoked / suspended, 429 = velocity (burst) limit tripped.
+      if (e instanceof KairuneError && (e.status === 409 || e.status === 429)) {
         return {
           approved: false,
           error: e.message,

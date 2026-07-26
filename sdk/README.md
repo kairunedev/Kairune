@@ -62,7 +62,12 @@ await k.attest(agentId, { kind: 'task_completed', amount: 50 })
 const { permission } = await k.grantPermission(agentId, {
   category: 'compute',
   ceiling: 100,
-  period: 'day'
+  period: 'day',
+  // Optional burst cap: at most $20 within any 60s window, on top of the
+  // daily ceiling. Catches a runaway/compromised agent — a spend that trips
+  // it is denied (429) and fires a `spend.velocity` webhook.
+  velocity_limit: 20,
+  velocity_window_s: 60
 })
 
 // Preview first (optional): check before you charge, no budget consumed.

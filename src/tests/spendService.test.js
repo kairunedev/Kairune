@@ -16,7 +16,12 @@ const spendService = require('../services/spendService');
 after(() => closeDb());
 
 // Insert an active agent + active permission directly, returning the ids.
-async function seedPermission({ ceiling, period = 'day' }) {
+async function seedPermission({
+  ceiling,
+  period = 'day',
+  velocity_limit = null,
+  velocity_window_s = null,
+}) {
   const db = await getDb();
   const ts = new Date().toISOString();
   const agentId = crypto.randomUUID();
@@ -27,9 +32,9 @@ async function seedPermission({ ceiling, period = 'day' }) {
     args: [agentId, 'u-' + agentId.slice(0, 8), 'w-' + agentId.slice(0, 8), 'CI', ts, ts],
   });
   await db.execute({
-    sql: `INSERT INTO permissions (id, agent_id, category, ceiling, period, status, granted_by, created_at, revoked_at)
-          VALUES (?, ?, 'compute', ?, ?, 'active', 'CI', ?, NULL)`,
-    args: [permId, agentId, ceiling, period, ts],
+    sql: `INSERT INTO permissions (id, agent_id, category, ceiling, period, status, velocity_limit, velocity_window_s, granted_by, created_at, revoked_at)
+          VALUES (?, ?, 'compute', ?, ?, 'active', ?, ?, 'CI', ?, NULL)`,
+    args: [permId, agentId, ceiling, period, velocity_limit, velocity_window_s, ts],
   });
   return { agentId, permId };
 }
@@ -331,4 +336,112 @@ test('spend.threshold is logged to the activity feed once per window crossing', 
   );
   assert.strictEqual(thresholds.length, 1, 'exactly one threshold crossing logged');
   assert.strictEqual(thresholds[0].reason, 'threshold_80pct');
+});
+
+// ---------------------------------------------------------------------------
+// Velocity (burst) limit
+// ---------------------------------------------------------------------------
+
+test('resolveVelocity returns null without a limit, and defaults the window', () => {
+  assert.strictEqual(spendService.resolveVelocity({ velocity_limit: null }), null);
+  assert.strictEqual(spendService.resolveVelocity({ velocity_limit: 0 }), null);
+
+  const v = spendService.resolveVelocity({ velocity_limit: 50 });
+  assert.strictEqual(v.limit, 50);
+  assert.strictEqual(v.windowSeconds, spendService.DEFAULT_VELOCITY_WINDOW_S);
+  assert.strictEqual(v.windowMs, spendService.DEFAULT_VELOCITY_WINDOW_S * 1000);
+
+  const w = spendService.resolveVelocity({ velocity_limit: 50, velocity_window_s: 10 });
+  assert.strictEqual(w.windowSeconds, 10);
+  assert.strictEqual(w.windowMs, 10_000);
+});
+
+test('velocity: blocks a burst that exceeds the limit even when the ceiling fits', async () => {
+  // Ceiling 1000/day is plenty, but a 30/60s burst cap should stop rapid spend.
+  const { permId } = await seedPermission({
+    ceiling: 1000,
+    period: 'day',
+    velocity_limit: 30,
+    velocity_window_s: 60,
+  });
+  const now = Date.now();
+
+  await spendService.authorizeSpend(permId, { amount: 20 }, { nowMs: now });
+  await assert.rejects(
+    () => spendService.authorizeSpend(permId, { amount: 15 }, { nowMs: now }),
+    (e) => e.status === 429 && e.details.velocity_remaining === 10
+  );
+
+  // Ceiling budget is untouched by the blocked burst — only 20 recorded.
+  const budget = await spendService.budgetSummary(permId, { nowMs: now });
+  assert.strictEqual(budget.used, 20);
+  assert.strictEqual(budget.velocity_limit, 30);
+  assert.strictEqual(budget.velocity_window_s, 60);
+});
+
+test('velocity: budget frees up once spends age out of the velocity window', async () => {
+  const { permId } = await seedPermission({
+    ceiling: 1000,
+    period: 'day',
+    velocity_limit: 30,
+    velocity_window_s: 60,
+  });
+  const t0 = Date.now();
+  await spendService.authorizeSpend(permId, { amount: 30 }, { nowMs: t0 });
+
+  // Immediately after, the window is full — a further spend is blocked.
+  await assert.rejects(
+    () => spendService.authorizeSpend(permId, { amount: 5 }, { nowMs: t0 + 1000 }),
+    (e) => e.status === 429
+  );
+
+  // 61s later the first spend has aged out of the 60s window — allowed again.
+  const ok = await spendService.authorizeSpend(permId, { amount: 30 }, { nowMs: t0 + 61_000 });
+  assert.strictEqual(ok.spend.amount, 30);
+});
+
+test('velocity: ceiling_exceeded takes precedence over a velocity block', async () => {
+  // Ceiling smaller than the velocity limit — the ceiling should trip first.
+  const { permId } = await seedPermission({
+    ceiling: 10,
+    period: 'day',
+    velocity_limit: 100,
+    velocity_window_s: 60,
+  });
+  await assert.rejects(
+    () => spendService.authorizeSpend(permId, { amount: 25 }),
+    (e) => e.status === 409 && e.details.remaining === 10
+  );
+});
+
+test('velocity: previewSpend agrees with the real velocity decision', async () => {
+  const { permId } = await seedPermission({
+    ceiling: 1000,
+    period: 'day',
+    velocity_limit: 30,
+    velocity_window_s: 60,
+  });
+  const now = Date.now();
+  await spendService.authorizeSpend(permId, { amount: 25 }, { nowMs: now });
+
+  const wouldBlock = await spendService.previewSpend(permId, { amount: 10 }, { nowMs: now });
+  assert.strictEqual(wouldBlock.allowed, false);
+  assert.strictEqual(wouldBlock.reason, 'velocity_exceeded');
+
+  const wouldPass = await spendService.previewSpend(permId, { amount: 5 }, { nowMs: now });
+  assert.strictEqual(wouldPass.allowed, true);
+  assert.strictEqual(wouldPass.reason, null);
+
+  // Preview wrote nothing — real used is still just the 25.
+  const budget = await spendService.budgetSummary(permId, { nowMs: now });
+  assert.strictEqual(budget.used, 25);
+});
+
+test('velocity: a permission without a limit is never velocity-blocked', async () => {
+  const { permId } = await seedPermission({ ceiling: 1000, period: 'day' });
+  const now = Date.now();
+  // Rapid-fire spends well within the ceiling, no velocity cap → all allowed.
+  await spendService.authorizeSpend(permId, { amount: 100 }, { nowMs: now });
+  const ok = await spendService.authorizeSpend(permId, { amount: 100 }, { nowMs: now });
+  assert.strictEqual(ok.budget.used, 200);
 });

@@ -371,6 +371,51 @@ test('spend preview: bad amount → 400, unknown permission → 404', async () =
   assert.strictEqual(missing.status, 404);
 });
 
+test('velocity: a grant with a burst cap blocks a rapid over-limit spend (429)', async () => {
+  const id = await trustedAgent('velocity-01', '0x5000000000000000000000000000000000000013');
+  const grant = await req('POST', '/api/agents/' + id + '/permissions', {
+    category: 'compute',
+    ceiling: 100000, // large ceiling so only the velocity cap can trip
+    period: 'day',
+    velocity_limit: 30,
+    velocity_window_s: 60,
+  });
+  assert.strictEqual(grant.status, 201);
+  assert.strictEqual(grant.body.permission.velocity_limit, 30);
+  assert.strictEqual(grant.body.permission.velocity_window_s, 60);
+  const pid = grant.body.permission.id;
+
+  // First 20 fits under both ceiling and the 30/60s burst cap.
+  const first = await req('POST', '/api/permissions/' + pid + '/spends', { amount: 20 });
+  assert.strictEqual(first.status, 201);
+
+  // A second 15 would push the 60s window to 35 > 30 → velocity block (429).
+  const burst = await req('POST', '/api/permissions/' + pid + '/spends', { amount: 15 });
+  assert.strictEqual(burst.status, 429);
+  assert.strictEqual(burst.body.details.velocity_remaining, 10);
+
+  // A preview agrees: same inputs would be blocked with velocity_exceeded.
+  const preview = await req('POST', '/api/permissions/' + pid + '/spends/preview', { amount: 15 });
+  assert.strictEqual(preview.status, 200);
+  assert.strictEqual(preview.body.allowed, false);
+  assert.strictEqual(preview.body.reason, 'velocity_exceeded');
+
+  // Budget only reflects the one accepted spend.
+  const budget = await req('GET', '/api/permissions/' + pid + '/budget');
+  assert.strictEqual(budget.body.budget.used, 20);
+  assert.strictEqual(budget.body.budget.velocity_limit, 30);
+});
+
+test('velocity: velocity_window_s without velocity_limit is rejected (400)', async () => {
+  const id = await trustedAgent('velocity-02', '0x5000000000000000000000000000000000000014');
+  const bad = await req('POST', '/api/agents/' + id + '/permissions', {
+    category: 'compute',
+    ceiling: 100,
+    velocity_window_s: 60,
+  });
+  assert.strictEqual(bad.status, 400);
+});
+
 test('spend: history lists accepted charges, most recent first', async () => {
   const id = await trustedAgent('spend-05', '0x5000000000000000000000000000000000000005');
   const grant = await req('POST', '/api/agents/' + id + '/permissions', {

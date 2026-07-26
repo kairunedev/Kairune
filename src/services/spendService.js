@@ -133,6 +133,50 @@ const PERIOD_MS = Object.freeze({
   month: 30 * 86_400_000,
 });
 
+// Default rolling window (seconds) for a permission's velocity limit when the
+// grant sets a velocity_limit but leaves velocity_window_s unset.
+const DEFAULT_VELOCITY_WINDOW_S = 60;
+
+/**
+ * Resolve a permission's effective velocity limit, or null when it has none.
+ *
+ * A velocity limit is a burst cap layered on top of the period ceiling: at most
+ * `limit` may be spent within any rolling `windowSeconds` window. It catches a
+ * runaway or compromised agent draining its whole budget in seconds — the
+ * period ceiling alone wouldn't flag that until the ceiling itself is hit.
+ * @param {object} permission
+ * @returns {{limit:number, windowMs:number, windowSeconds:number}|null}
+ */
+function resolveVelocity(permission) {
+  const limit = Number(permission.velocity_limit);
+  if (!Number.isFinite(limit) || limit <= 0) return null;
+  const rawWindow = Number(permission.velocity_window_s);
+  const windowSeconds =
+    Number.isFinite(rawWindow) && rawWindow > 0
+      ? Math.floor(rawWindow)
+      : DEFAULT_VELOCITY_WINDOW_S;
+  return { limit, windowMs: windowSeconds * 1000, windowSeconds };
+}
+
+/**
+ * Total amount spent against a permission within the last `windowMs`.
+ * @param {string} permissionId
+ * @param {number} windowMs
+ * @param {number} [nowMs]
+ * @returns {Promise<number>}
+ */
+async function usedInVelocityWindow(permissionId, windowMs, nowMs) {
+  const db = await getDb();
+  const since = new Date((nowMs || Date.now()) - windowMs).toISOString();
+  const res = await db.execute({
+    sql: `SELECT COALESCE(SUM(amount), 0) AS used
+          FROM spends
+          WHERE permission_id = ? AND created_at >= ?`,
+    args: [permissionId, since],
+  });
+  return Number(res.rows[0].used) || 0;
+}
+
 // Fraction of the ceiling at which an approved spend emits a `spend.threshold`
 // warning, letting operators top up before the agent gets blocked. Overridable
 // via SPEND_ALERT_THRESHOLD (a value in (0,1), e.g. 0.9 for 90%).
@@ -290,6 +334,58 @@ async function authorizeSpend(
     throw err;
   }
 
+  // Velocity guard: even when the spend fits the period ceiling, block it if it
+  // would push spend past the burst cap within the short rolling window. This
+  // is what catches a runaway or compromised agent trying to drain budget in
+  // seconds. Checked after the ceiling so `ceiling_exceeded` always wins when
+  // both would trip. Emits a distinct `spend.velocity` signal so operators can
+  // treat a burst (possible compromise) differently from a normal denial.
+  const velocity = resolveVelocity(permission);
+  if (velocity) {
+    const velUsed = await usedInVelocityWindow(
+      permissionId,
+      velocity.windowMs,
+      opts.nowMs
+    );
+    if (velUsed + value > velocity.limit) {
+      const err = new Error(
+        `Spend exceeds velocity limit (requested ${value}, ${Math.max(
+          0,
+          velocity.limit - velUsed
+        )} available within ${velocity.windowSeconds}s window)`
+      );
+      err.status = 429;
+      err.details = {
+        requested: value,
+        velocity_limit: velocity.limit,
+        velocity_window_s: velocity.windowSeconds,
+        velocity_used: velUsed,
+        velocity_remaining: Math.max(0, velocity.limit - velUsed),
+      };
+      await emitSpendEvent('spend.velocity', {
+        permission_id: permissionId,
+        agent_id: permission.agent_id,
+        requested: value,
+        ceiling,
+        period: permission.period,
+        velocity_limit: velocity.limit,
+        velocity_window_s: velocity.windowSeconds,
+        velocity_used: velUsed,
+        velocity_remaining: Math.max(0, velocity.limit - velUsed),
+        reason: 'velocity_exceeded',
+      });
+      await recordEvent('spend.blocked', {
+        agent_id: permission.agent_id,
+        agent_handle: agent.handle,
+        amount: value,
+        ceiling,
+        period: permission.period,
+        reason: 'velocity_exceeded',
+      });
+      throw err;
+    }
+  }
+
   const spend = {
     id: crypto.randomUUID(),
     permission_id: permissionId,
@@ -442,6 +538,7 @@ async function previewSpend(
   const ceiling = Number(permission.ceiling);
   const used = await usedInWindow(permissionId, permission.period, opts.nowMs);
   const remaining = Math.max(0, ceiling - used);
+  const vel = resolveVelocity(permission);
   const budget = {
     permission_id: permissionId,
     agent_id: permission.agent_id,
@@ -451,6 +548,8 @@ async function previewSpend(
     ceiling,
     used,
     remaining,
+    velocity_limit: vel ? vel.limit : null,
+    velocity_window_s: vel ? vel.windowSeconds : null,
   };
 
   // Idempotent replay: a spend already exists for this key, so a real request
@@ -487,6 +586,19 @@ async function previewSpend(
     return { allowed: false, reason: 'ceiling_exceeded', requested: value, budget };
   }
 
+  // Velocity guard, same order as authorizeSpend: ceiling wins, then burst cap.
+  const velocity = resolveVelocity(permission);
+  if (velocity) {
+    const velUsed = await usedInVelocityWindow(
+      permissionId,
+      velocity.windowMs,
+      opts.nowMs
+    );
+    if (velUsed + value > velocity.limit) {
+      return { allowed: false, reason: 'velocity_exceeded', requested: value, budget };
+    }
+  }
+
   return { allowed: true, reason: null, requested: value, budget };
 }
 
@@ -507,6 +619,7 @@ async function budgetSummary(permissionId, opts = {}) {
 
   const ceiling = Number(permission.ceiling);
   const used = await usedInWindow(permissionId, permission.period, opts.nowMs);
+  const vel = resolveVelocity(permission);
   return {
     permission_id: permissionId,
     agent_id: permission.agent_id,
@@ -516,6 +629,8 @@ async function budgetSummary(permissionId, opts = {}) {
     ceiling,
     used,
     remaining: Math.max(0, ceiling - used),
+    velocity_limit: vel ? vel.limit : null,
+    velocity_window_s: vel ? vel.windowSeconds : null,
   };
 }
 
@@ -564,6 +679,9 @@ module.exports = {
   normalizeIdempotencyKey,
   findSpendByKey,
   resolveAlertThreshold,
+  resolveVelocity,
+  usedInVelocityWindow,
   PERIOD_MS,
   MAX_IDEMPOTENCY_KEY_LEN,
+  DEFAULT_VELOCITY_WINDOW_S,
 };

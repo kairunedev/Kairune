@@ -87,17 +87,19 @@ CREATE TABLE IF NOT EXISTS used_signatures (
 -- permissions: scoped spending grants (revocable)
 -- ---------------------------------------------------------------------------
 CREATE TABLE IF NOT EXISTS permissions (
-  id            TEXT PRIMARY KEY,              -- uuid
-  agent_id      TEXT NOT NULL,
-  category      TEXT NOT NULL,                 -- e.g. "compute", "subscriptions"
-  ceiling       REAL NOT NULL,                 -- spending limit (per period)
-  period        TEXT NOT NULL DEFAULT 'day'    -- day | week | month
-                  CHECK (period IN ('day', 'week', 'month')),
-  status        TEXT NOT NULL DEFAULT 'active' -- active | revoked
-                  CHECK (status IN ('active', 'revoked')),
-  granted_by    TEXT,                          -- who granted it
-  created_at    TEXT NOT NULL,
-  revoked_at    TEXT,
+  id                TEXT PRIMARY KEY,              -- uuid
+  agent_id          TEXT NOT NULL,
+  category          TEXT NOT NULL,                 -- e.g. "compute", "subscriptions"
+  ceiling           REAL NOT NULL,                 -- spending limit (per period)
+  period            TEXT NOT NULL DEFAULT 'day'    -- day | week | month
+                      CHECK (period IN ('day', 'week', 'month')),
+  status            TEXT NOT NULL DEFAULT 'active' -- active | revoked
+                      CHECK (status IN ('active', 'revoked')),
+  velocity_limit    REAL,                          -- optional burst cap: max spend per velocity_window (NULL = no limit)
+  velocity_window_s INTEGER,                        -- rolling window (seconds) for the velocity limit (NULL = default 60)
+  granted_by        TEXT,                          -- who granted it
+  created_at        TEXT NOT NULL,
+  revoked_at        TEXT,
   FOREIGN KEY (agent_id) REFERENCES agents(id) ON DELETE CASCADE
 );
 

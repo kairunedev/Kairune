@@ -107,7 +107,30 @@ async function initSchema(c) {
 
   await ensureAttestationColumns(c);
   await ensureSpendColumns(c);
+  await ensurePermissionColumns(c);
   await ensureSpendEventsConstraint(c);
+}
+
+/**
+ * Idempotently add the optional velocity-limit columns to an existing
+ * permissions table. CREATE TABLE IF NOT EXISTS won't alter a table that
+ * already exists, so the columns are added via PRAGMA table_info + ALTER.
+ * Both default to NULL, meaning "no velocity limit" — fully backward
+ * compatible with permissions granted before the feature existed.
+ * @param {import('@libsql/client').Client} c
+ */
+async function ensurePermissionColumns(c) {
+  const info = await c.execute('PRAGMA table_info(permissions)');
+  const existing = new Set(info.rows.map((r) => r.name));
+  const additions = [
+    ['velocity_limit', 'ALTER TABLE permissions ADD COLUMN velocity_limit REAL'],
+    ['velocity_window_s', 'ALTER TABLE permissions ADD COLUMN velocity_window_s INTEGER'],
+  ];
+  for (const [col, sql] of additions) {
+    if (!existing.has(col)) {
+      await c.execute(sql);
+    }
+  }
 }
 
 /**

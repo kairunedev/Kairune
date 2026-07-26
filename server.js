@@ -456,9 +456,12 @@ app.use((err, req, res, next) => {
     );
   }
   if (req.path.startsWith('/api')) {
-    return res.status(status).json({
-      error: err.message || 'Internal Server Error',
-    });
+    const body = { error: err.message || 'Internal Server Error' };
+    // Surface structured rejection details (e.g. remaining budget / velocity
+    // headroom on a blocked spend) so clients — and the SDK's SpendBlocked
+    // type — can branch on them. Only ever set for client (4xx) errors.
+    if (err.details && status < 500) body.details = err.details;
+    return res.status(status).json(body);
   }
   res
     .status(status)

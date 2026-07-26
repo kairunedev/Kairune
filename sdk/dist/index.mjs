@@ -127,7 +127,14 @@ var Kairune = class {
     const res = await this.request("POST", `/agents/${agentId}/attestations`, input);
     return res.attestation;
   }
-  /** Grant a spending permission to an agent. */
+  /**
+   * Grant a spending permission to an agent.
+   *
+   * Pass `velocity_limit` to add a burst cap on top of the period ceiling: at
+   * most that amount may be spent within `velocity_window_s` seconds (default
+   * 60). A spend that trips it is denied and fires a `spend.velocity` webhook,
+   * catching a runaway or compromised agent before it drains the whole budget.
+   */
   async grantPermission(agentId, input) {
     return this.request("POST", `/agents/${agentId}/permissions`, input);
   }
@@ -136,8 +143,11 @@ var Kairune = class {
     return this.request("POST", `/permissions/${permissionId}/revoke`);
   }
   /**
-   * Authorize a spend against a permission. Enforces the ceiling.
+   * Authorize a spend against a permission. Enforces the ceiling — and the
+   * burst (velocity) limit when the permission has one.
    * Returns `{ approved: true, spend, budget }` or `{ approved: false, error, details }`.
+   * A blocked spend (ceiling or velocity) resolves as `approved: false`; only
+   * an unexpected error throws.
    *
    * Pass `idempotencyKey` to make the charge safe to retry: a retry that reuses
    * the same key returns the original spend without charging the budget again
@@ -156,7 +166,7 @@ var Kairune = class {
       );
       return { approved: true, ...res };
     } catch (e) {
-      if (e instanceof KairuneError && e.status === 409) {
+      if (e instanceof KairuneError && (e.status === 409 || e.status === 429)) {
         return {
           approved: false,
           error: e.message,

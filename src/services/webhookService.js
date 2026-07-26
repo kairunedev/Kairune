@@ -23,11 +23,13 @@ function nowIso() {
 //   spend.approved     — a spend was authorized within its ceiling
 //   spend.blocked      — a spend was denied (ceiling exceeded / no budget)
 //   spend.threshold    — an approved spend pushed budget past the alert line
+//   spend.velocity     — a spend was denied by the burst (velocity) limit
 //   agent.tier_changed — an agent's trust tier moved up or down after a rescore
 const EVENTS = Object.freeze([
   'spend.approved',
   'spend.blocked',
   'spend.threshold',
+  'spend.velocity',
   'agent.tier_changed',
 ]);
 

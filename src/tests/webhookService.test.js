@@ -47,7 +47,12 @@ after(async () => {
 });
 
 // Seed an active agent + active permission, returning the permission id.
-async function seedPermission({ ceiling, period = 'day' }) {
+async function seedPermission({
+  ceiling,
+  period = 'day',
+  velocity_limit = null,
+  velocity_window_s = null,
+}) {
   const db = await getDb();
   const ts = new Date().toISOString();
   const agentId = crypto.randomUUID();
@@ -58,9 +63,9 @@ async function seedPermission({ ceiling, period = 'day' }) {
     args: [agentId, 'u-' + agentId.slice(0, 8), 'w-' + agentId.slice(0, 8), 'CI', ts, ts],
   });
   await db.execute({
-    sql: `INSERT INTO permissions (id, agent_id, category, ceiling, period, status, granted_by, created_at, revoked_at)
-          VALUES (?, ?, 'compute', ?, ?, 'active', 'CI', ?, NULL)`,
-    args: [permId, agentId, ceiling, period, ts],
+    sql: `INSERT INTO permissions (id, agent_id, category, ceiling, period, status, velocity_limit, velocity_window_s, granted_by, created_at, revoked_at)
+          VALUES (?, ?, 'compute', ?, ?, 'active', ?, ?, 'CI', ?, NULL)`,
+    args: [permId, agentId, ceiling, period, velocity_limit, velocity_window_s, ts],
   });
   return { agentId, permId };
 }
@@ -223,6 +228,86 @@ test('spend.threshold fires once when a spend crosses the alert line', async () 
   assert.strictEqual(data.used, 90, 'reports usage at the crossing');
   assert.strictEqual(data.threshold, 0.8);
   assert.ok(Math.abs(data.utilization - 0.9) < 1e-9);
+
+  await webhookService.deleteWebhook(webhook.id);
+});
+
+test('spend.velocity fires when a spend trips the burst cap', async () => {
+  received.length = 0;
+  const { webhook } = await webhookService.createWebhook({
+    url: receiverUrl,
+    events: ['spend.velocity'],
+  });
+
+  // Big daily ceiling so only the 30/60s burst cap can trip.
+  const { permId } = await seedPermission({
+    ceiling: 100000,
+    period: 'day',
+    velocity_limit: 30,
+    velocity_window_s: 60,
+  });
+  const now = Date.now();
+
+  // Fits the burst cap — approved, not subscribed here, no delivery.
+  await spendService.authorizeSpend(permId, { amount: 20 }, { nowMs: now });
+  // 20 → 35 within 60s exceeds the 30 cap — velocity block + one delivery.
+  await assert.rejects(
+    () => spendService.authorizeSpend(permId, { amount: 15 }, { nowMs: now }),
+    (err) => err.status === 429
+  );
+
+  await waitForDeliveries(1);
+  await new Promise((r) => setTimeout(r, 150));
+
+  assert.strictEqual(received.length, 1, 'velocity fires exactly once');
+  assert.strictEqual(received[0].event, 'spend.velocity');
+  const data = received[0].body.data;
+  assert.strictEqual(data.permission_id, permId);
+  assert.strictEqual(data.reason, 'velocity_exceeded');
+  assert.strictEqual(data.velocity_limit, 30);
+  assert.strictEqual(data.velocity_window_s, 60);
+  assert.strictEqual(data.velocity_used, 20);
+  assert.strictEqual(data.velocity_remaining, 10);
+  assert.strictEqual(data.requested, 15);
+
+  await webhookService.deleteWebhook(webhook.id);
+});
+
+test('spend.velocity fires when a burst trips the velocity limit', async () => {
+  received.length = 0;
+  const { webhook } = await webhookService.createWebhook({
+    url: receiverUrl,
+    events: ['spend.velocity'],
+  });
+
+  // Large ceiling so only the 30-per-60s burst cap can trip.
+  const { permId } = await seedPermission({
+    ceiling: 100000,
+    period: 'day',
+    velocity_limit: 30,
+    velocity_window_s: 60,
+  });
+  const now = Date.now();
+
+  // 20 fits the burst window; the follow-up 15 would push it to 35 > 30.
+  await spendService.authorizeSpend(permId, { amount: 20 }, { nowMs: now });
+  await assert.rejects(
+    () => spendService.authorizeSpend(permId, { amount: 15 }, { nowMs: now }),
+    (err) => err.status === 429
+  );
+
+  await waitForDeliveries(1);
+  await new Promise((r) => setTimeout(r, 150));
+
+  assert.strictEqual(received.length, 1, 'velocity fires once for the blocked burst');
+  assert.strictEqual(received[0].event, 'spend.velocity');
+  const data = received[0].body.data;
+  assert.strictEqual(data.permission_id, permId);
+  assert.strictEqual(data.velocity_limit, 30);
+  assert.strictEqual(data.velocity_window_s, 60);
+  assert.strictEqual(data.velocity_used, 20);
+  assert.strictEqual(data.velocity_remaining, 10);
+  assert.strictEqual(data.reason, 'velocity_exceeded');
 
   await webhookService.deleteWebhook(webhook.id);
 });

@@ -76,3 +76,17 @@ point-in-time read, not a reservation — the real `spend` is always authoritati
 ```bash
 KAIRUNE_PERMISSION_ID=<id> COST=5 npx tsx examples/04-spend-preview.ts
 ```
+
+### `05-velocity-guard.ts`
+
+The burst-protection pattern: grant a permission with a `velocity_limit` on top
+of the period ceiling, capping how fast an agent can spend (max spend per
+`velocity_window_s`). A rapid over-limit spend is denied with a 429 and fires a
+`spend.velocity` webhook, catching a runaway or compromised agent before it
+drains the whole day's budget. The blocked result's `details` carries the
+remaining burst headroom so a caller can back off and retry once the window
+rolls over.
+
+```bash
+KAIRUNE_AGENT_ID=<id> npx tsx examples/05-velocity-guard.ts
+```

@@ -50,6 +50,10 @@ interface Permission {
     ceiling: number;
     period: 'day' | 'week' | 'month';
     status: 'active' | 'revoked';
+    /** Optional burst cap: max spend within `velocity_window_s`. `null` = no limit. */
+    velocity_limit?: number | null;
+    /** Rolling window (seconds) for the velocity limit. `null` when no limit is set. */
+    velocity_window_s?: number | null;
     granted_by: string | null;
     created_at: string;
 }
@@ -62,6 +66,10 @@ interface Budget {
     ceiling: number;
     used: number;
     remaining: number;
+    /** Burst cap (max spend within `velocity_window_s`), or `null` when none is set. */
+    velocity_limit?: number | null;
+    /** Rolling window (seconds) for the velocity limit, or `null` when none is set. */
+    velocity_window_s?: number | null;
 }
 interface Spend {
     id: string;
@@ -82,16 +90,25 @@ interface SpendResult {
 interface SpendBlocked {
     approved: false;
     error: string;
+    /**
+     * Structured rejection detail. Shape depends on why the spend was blocked:
+     * a ceiling block carries `remaining`/`used`/`period`, a velocity (burst)
+     * block carries `velocity_limit`/`velocity_window_s`/`velocity_remaining`.
+     */
     details?: {
         requested: number;
-        ceiling: number;
-        used: number;
-        remaining: number;
-        period: string;
+        ceiling?: number;
+        used?: number;
+        remaining?: number;
+        period?: string;
+        velocity_limit?: number;
+        velocity_window_s?: number;
+        velocity_used?: number;
+        velocity_remaining?: number;
     };
 }
 /** Why a previewed spend would be blocked. `null` when it would be allowed. */
-type SpendPreviewReason = 'ceiling_exceeded' | 'permission_revoked' | 'agent_suspended' | 'agent_not_found';
+type SpendPreviewReason = 'ceiling_exceeded' | 'velocity_exceeded' | 'permission_revoked' | 'agent_suspended' | 'agent_not_found';
 interface SpendPreview {
     /** Whether a real charge with these inputs would be authorized right now. */
     allowed: boolean;
@@ -236,11 +253,20 @@ declare class Kairune {
         amount?: number;
         note?: string;
     }): Promise<Attestation>;
-    /** Grant a spending permission to an agent. */
+    /**
+     * Grant a spending permission to an agent.
+     *
+     * Pass `velocity_limit` to add a burst cap on top of the period ceiling: at
+     * most that amount may be spent within `velocity_window_s` seconds (default
+     * 60). A spend that trips it is denied and fires a `spend.velocity` webhook,
+     * catching a runaway or compromised agent before it drains the whole budget.
+     */
     grantPermission(agentId: string, input: {
         category: string;
         ceiling: number;
         period?: string;
+        velocity_limit?: number;
+        velocity_window_s?: number;
     }): Promise<{
         permission: Permission;
         capped: boolean;
@@ -250,8 +276,11 @@ declare class Kairune {
         revoked: boolean;
     }>;
     /**
-     * Authorize a spend against a permission. Enforces the ceiling.
+     * Authorize a spend against a permission. Enforces the ceiling — and the
+     * burst (velocity) limit when the permission has one.
      * Returns `{ approved: true, spend, budget }` or `{ approved: false, error, details }`.
+     * A blocked spend (ceiling or velocity) resolves as `approved: false`; only
+     * an unexpected error throws.
      *
      * Pass `idempotencyKey` to make the charge safe to retry: a retry that reuses
      * the same key returns the original spend without charging the budget again
