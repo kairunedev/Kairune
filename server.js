@@ -353,7 +353,9 @@ app.get('/a/:handle/rank.svg', async (req, res, next) => {
       // DB write per hotlinked badge hit). See the /api/agents/:id/rank route.
       const rank = await agentService.getRank(base.id);
       svg = renderRankBadgeSvg(rank || { rank: 0, total: 0, tier: 0 });
-      res.setHeader('Cache-Control', 'public, max-age=300, s-maxage=300');
+      // Short cache: badge is hotlinked so we don't want to hammer the DB, but
+      // 30s keeps the displayed rank close to real-time.
+      res.setHeader('Cache-Control', 'public, max-age=30, s-maxage=30');
     }
     // Badges are hotlinked cross-origin from READMEs, so CORS must be open.
     res.setHeader('Access-Control-Allow-Origin', '*');
