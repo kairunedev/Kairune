@@ -16,7 +16,12 @@ const apiRouter = require('./src/routes/api');
 const agentService = require('./src/services/agentService');
 const attestationService = require('./src/services/attestationService');
 const trustScore = require('./src/services/trustScore');
-const { renderCardSvg, renderLeaderboardSvg, renderBadgeSvg } = require('./src/services/shareCard');
+const {
+  renderCardSvg,
+  renderLeaderboardSvg,
+  renderBadgeSvg,
+  renderRankBadgeSvg,
+} = require('./src/services/shareCard');
 const { flattenTextToPaths } = require('./src/services/svgText');
 
 // Configuration comes from the environment (no secret values are hard-coded).
@@ -324,6 +329,33 @@ app.get('/a/:handle/badge.svg', async (req, res, next) => {
       svg = renderBadgeSvg({ ...agent, label });
       res.setHeader('Cache-Control', 'public, max-age=300, s-maxage=300');
     }
+    res.setHeader('Access-Control-Allow-Origin', '*');
+    res.type('image/svg+xml').send(svg);
+  } catch (err) {
+    next(err);
+  }
+});
+
+// Compact, embeddable leaderboard-rank badge — the competitive share hook.
+// Usage: [![Kairune rank](https://kairune.online/a/<handle>/rank.svg)](https://kairune.online/leaderboard)
+app.get('/a/:handle/rank.svg', async (req, res, next) => {
+  try {
+    const handle = String(req.params.handle).trim().toLowerCase();
+    const base = await agentService.getAgent(handle);
+    let svg;
+    if (!base) {
+      // Unknown handle: render an honest "unranked" badge rather than 404 —
+      // the image is hotlinked, so a broken image would be a poor UX.
+      svg = renderRankBadgeSvg({ rank: 0, total: 0, tier: 0 });
+      res.setHeader('Cache-Control', 'no-cache');
+    } else {
+      // Use stored scores for a consistent cross-agent snapshot (and to avoid a
+      // DB write per hotlinked badge hit). See the /api/agents/:id/rank route.
+      const rank = await agentService.getRank(base.id);
+      svg = renderRankBadgeSvg(rank || { rank: 0, total: 0, tier: 0 });
+      res.setHeader('Cache-Control', 'public, max-age=300, s-maxage=300');
+    }
+    // Badges are hotlinked cross-origin from READMEs, so CORS must be open.
     res.setHeader('Access-Control-Allow-Origin', '*');
     res.type('image/svg+xml').send(svg);
   } catch (err) {

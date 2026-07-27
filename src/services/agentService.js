@@ -122,6 +122,81 @@ async function listAgents({ limit = 50, offset = 0, status, includeDemo = false 
 }
 
 /**
+ * Live leaderboard rank for a single agent.
+ *
+ * Position is computed with the EXACT same universe and ordering as
+ * `listAgents` (the public leaderboard): non-demo agents only, ordered by
+ * `score DESC, created_at ASC`. Rank is 1-based; ties are broken by the older
+ * agent ranking higher (matching the leaderboard's stable order). Percentile
+ * is "top X%" — smaller is better — so a #1 of 200 reads as top 0.5%.
+ *
+ * Demo/test agents (and the agent itself, if excluded) return null: they have
+ * no public standing to rank. This powers the embeddable rank badge and the
+ * "rank up" share moment, so it must agree with what the leaderboard shows.
+ *
+ * @param {string} idOrHandle
+ * @returns {Promise<{rank:number, total:number, percentile:number,
+ *   score:number, tier:number, label:string, handle:string}|null>}
+ */
+async function getRank(idOrHandle) {
+  const agent = await getAgent(idOrHandle);
+  if (!agent) return null;
+
+  const db = await getDb();
+
+  // Total ranked population (same exclusion as the leaderboard/stats).
+  const totalRow = (
+    await db.execute(`SELECT COUNT(*) c FROM agents WHERE 1=1${DEMO_EXCLUSION_SQL}`)
+  ).rows[0];
+  const total = Number(totalRow.c) || 0;
+
+  // Is this agent part of the ranked universe at all? A demo/test/non-EVM
+  // agent is filtered out of the leaderboard, so it has no public rank.
+  const includedRow = (
+    await db.execute({
+      sql: `SELECT COUNT(*) c FROM agents WHERE id = ?${DEMO_EXCLUSION_SQL}`,
+      args: [agent.id],
+    })
+  ).rows[0];
+  if (!Number(includedRow.c)) return null;
+
+  // Count how many ranked agents strictly outrank this one. The ordering is
+  // (score DESC, created_at ASC), so an agent outranks us if it has a higher
+  // score, OR the same score but an earlier created_at (with id as the final
+  // deterministic tiebreak, mirroring a stable sort).
+  const aheadRow = (
+    await db.execute({
+      sql: `SELECT COUNT(*) c FROM agents
+            WHERE 1=1${DEMO_EXCLUSION_SQL}
+              AND (
+                score > ?
+                OR (score = ? AND created_at < ?)
+                OR (score = ? AND created_at = ? AND id < ?)
+              )`,
+      args: [
+        agent.score,
+        agent.score, agent.created_at,
+        agent.score, agent.created_at, agent.id,
+      ],
+    })
+  ).rows[0];
+
+  const rank = Number(aheadRow.c) + 1;
+  // "Top X%" — a #1 of 200 is top 0.5%. Guard against divide-by-zero.
+  const percentile = total > 0 ? Math.round((rank / total) * 1000) / 10 : 100;
+
+  return {
+    handle: agent.handle,
+    rank,
+    total,
+    percentile,
+    score: Number(agent.score) || 0,
+    tier: Number(agent.tier) || 0,
+    label: TIER_LABELS[Number(agent.tier) || 0] || 'UNRATED',
+  };
+}
+
+/**
  * Public platform statistics. Applies the SAME demo/test exclusion as the
  * leaderboard so the headline numbers match what visitors actually see.
  * Set includeDemo=true to count everything (internal/debug use).
@@ -311,6 +386,7 @@ module.exports = {
   getAgent,
   getAgentByWallet,
   listAgents,
+  getRank,
   getStats,
   setAgentStatus,
   recalcAgent,

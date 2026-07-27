@@ -315,10 +315,72 @@ function renderBadgeSvg(agent) {
 </svg>`;
 }
 
+/**
+ * Render a compact, embeddable "leaderboard rank" badge (shields.io style).
+ * Left half = label (dark), right half = "#<rank> of <total>" in the tier
+ * colour. This is the competitive, screenshot-able counterpart to the trust
+ * badge — every embed carries the Kairune mark back to a new audience:
+ *   [![Kairune rank](https://kairune.online/a/<handle>/rank.svg)](https://kairune.online/leaderboard)
+ *
+ * An unranked agent (demo/test, or none registered) shows "unranked" in the
+ * muted UNRATED colour instead of a fake position.
+ *
+ * @param {object} r { rank, total, tier } — as returned by agentService.getRank
+ * @returns {string} SVG markup (height 20, dynamic width)
+ */
+function renderRankBadgeSvg(r = {}) {
+  const rank = Number(r.rank) || 0;
+  const total = Number(r.total) || 0;
+  const ranked = rank > 0 && total > 0;
+  const tier = Math.max(0, Math.min(4, Number(r.tier) || 0));
+  // Unranked agents fall back to the muted UNRATED colour.
+  const color = ranked ? BADGE_TIER_COLOR[tier] : BADGE_TIER_COLOR[0];
+  const valueInk = '#10130A';
+
+  const H = 20;
+  const fs = 11;
+  const padX = 8;
+  const logoW = 16;
+
+  const leftText = 'kairune rank';
+  const valueText = ranked ? `#${rank} of ${total}` : 'unranked';
+
+  const leftTextW = badgeTextWidth(leftText, fs);
+  const valueTextW = badgeTextWidth(valueText, fs);
+  const leftW = logoW + leftTextW + padX * 2;
+  const rightW = valueTextW + padX * 2;
+  const W = leftW + rightW;
+
+  const leftTextMidX = logoW + padX + leftTextW / 2;
+  const rightTextMidX = leftW + padX + valueTextW / 2;
+  const textY = 14;
+
+  return `<svg xmlns="http://www.w3.org/2000/svg" width="${W}" height="${H}" viewBox="0 0 ${W} ${H}" role="img" aria-label="Kairune rank: ${escapeXml(valueText)}">
+  <defs>
+    <linearGradient id="rsheen" x2="0" y2="100%">
+      <stop offset="0" stop-color="#FFFFFF" stop-opacity=".08"/>
+      <stop offset="1" stop-color="#000000" stop-opacity=".18"/>
+    </linearGradient>
+    <clipPath id="rround"><rect width="${W}" height="${H}" rx="4"/></clipPath>
+  </defs>
+  <g clip-path="url(#rround)">
+    <rect width="${leftW}" height="${H}" fill="#141518"/>
+    <rect x="${leftW}" width="${rightW}" height="${H}" fill="${color}"/>
+    <rect width="${W}" height="${H}" fill="url(#rsheen)"/>
+  </g>
+  <g transform="translate(6,5)">
+    <polygon points="5,0 9.5,2.6 9.5,7.8 5,10.4 0.5,7.8 0.5,2.6" fill="${COLORS.signal}"/>
+  </g>
+  <text x="${leftTextMidX}" y="${textY}" text-anchor="middle" font-family="${SANS}" font-size="${fs}" font-weight="600" fill="${COLORS.text}">${escapeXml(leftText)}</text>
+  <text x="${rightTextMidX}" y="${textY}" text-anchor="middle" font-family="${SANS}" font-size="${fs}" font-weight="700" fill="${valueInk}">${escapeXml(valueText)}</text>
+</svg>`;
+}
+
 module.exports = {
   renderCardSvg,
   renderLeaderboardSvg,
   renderBadgeSvg,
+  renderRankBadgeSvg,
   COLORS,
   TIER_ACCENT,
 };

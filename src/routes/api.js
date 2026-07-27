@@ -9,6 +9,7 @@
  *   POST   /api/agents                       register a new agent
  *   GET    /api/agents/:id                    agent detail + score breakdown
  *   GET    /api/agents/:id/trust-sources      issuer-diversity of verified trust
+ *   GET    /api/agents/:id/rank               live leaderboard rank + percentile
  *   PATCH  /api/agents/:id/status             suspend / activate an agent
  *   DELETE /api/agents/:id                    delete an agent
  *   GET    /api/agents/:id/attestations       attestation history
@@ -94,6 +95,8 @@ router.get('/meta', (req, res) => {
     signature_max_age_seconds: replayGuard.maxAgeSeconds(),
     verify_endpoint: '/api/verify',
     trust_sources_endpoint: '/api/agents/:id/trust-sources',
+    rank_endpoint: '/api/agents/:id/rank',
+    rank_badge_endpoint: '/a/:handle/rank.svg',
     wallet_lookup_endpoint: '/api/wallets/:wallet',
     spend_preview_endpoint: '/api/permissions/:pid/spends/preview',
     spend_alert_threshold: spendService.resolveAlertThreshold(),
@@ -257,6 +260,33 @@ router.get(
       permissionService.listPermissions(base.id),
     ]);
     res.json({ agent, attestations, permissions });
+  })
+);
+
+// Live leaderboard rank for an agent — the competitive, shareable "where do I
+// stand?" signal. Same universe/ordering as GET /api/agents (the public
+// leaderboard), so #3 here is exactly the 3rd row there. Public, no auth.
+// 404 for an unknown agent; a demo/test agent (no public standing) returns
+// ranked:false with a null rank rather than a fake position.
+router.get(
+  '/agents/:id/rank',
+  wrap(async (req, res) => {
+    const agent = await agentService.getAgent(req.params.id);
+    if (!agent) {
+      const err = new Error('Agent not found');
+      err.status = 404;
+      throw err;
+    }
+    // Rank is a snapshot across ALL agents, so it must compare like-for-like:
+    // every agent's *stored* score (kept fresh on attestation writes and detail
+    // reads). Rescoring only the queried agent here would compare a fresh score
+    // against everyone else's stored score — an inconsistent ordering — and add
+    // a DB write to a frequently hotlinked endpoint. So we read as-is.
+    const rank = await agentService.getRank(agent.id);
+    if (!rank) {
+      return res.json({ ranked: false, handle: agent.handle, rank: null });
+    }
+    res.json({ ranked: true, ...rank });
   })
 );
 
