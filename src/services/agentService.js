@@ -282,6 +282,10 @@ async function recalcAgent(id) {
   const prevTier = prev ? Number(prev.tier) : null;
   const prevScore = prev ? Number(prev.score) : null;
 
+  // Snapshot the leaderboard rank before rescoring too. null means the agent
+  // has no public standing (demo/test/non-EVM) — those never emit rank events.
+  const prevRankInfo = prev ? await getRank(id) : null;
+
   const res = await db.execute({
     sql: `SELECT kind, weight, created_at, verification_status, issuer_id FROM attestations WHERE agent_id = ?`,
     args: [id],
@@ -316,6 +320,32 @@ async function recalcAgent(id) {
     });
   }
 
+  // Emit an agent.rank_changed webhook when the agent's leaderboard position
+  // actually moves. This is the competitive share hook: an operator learns the
+  // moment their agent overtakes (or gets overtaken by) others. A lower rank
+  // number is better, so direction 'up' means the number decreased. Skipped
+  // when the agent has no public standing before/after (demo/test) or its rank
+  // is unchanged. Best-effort — a notification failure never affects scoring.
+  if (agent && prevRankInfo) {
+    const newRankInfo = await getRank(id);
+    if (newRankInfo && newRankInfo.rank !== prevRankInfo.rank) {
+      await emitRankChanged({
+        agent_id: agent.id,
+        agent_handle: agent.handle,
+        previous_rank: prevRankInfo.rank,
+        rank: newRankInfo.rank,
+        total: newRankInfo.total,
+        previous_percentile: prevRankInfo.percentile,
+        percentile: newRankInfo.percentile,
+        score: newRankInfo.score,
+        tier: newRankInfo.tier,
+        label: newRankInfo.label,
+        // Lower rank number = better position, so a decrease is a promotion.
+        direction: newRankInfo.rank < prevRankInfo.rank ? 'up' : 'down',
+      });
+    }
+  }
+
   return {
     ...agent,
     label: result.label,
@@ -336,6 +366,22 @@ async function recalcAgent(id) {
 async function emitTierChanged(data) {
   try {
     await webhookService.emit('agent.tier_changed', data);
+  } catch {
+    /* never let notifications affect scoring */
+  }
+}
+
+/**
+ * Fire an agent.rank_changed webhook event. Fully swallowed on failure so a
+ * webhook problem can never break a rescore. Awaited by recalcAgent so the
+ * delivery completes before the serverless (Vercel) process is frozen when the
+ * HTTP response is sent — same reason tier events are awaited.
+ * @param {object} data
+ * @returns {Promise<void>}
+ */
+async function emitRankChanged(data) {
+  try {
+    await webhookService.emit('agent.rank_changed', data);
   } catch {
     /* never let notifications affect scoring */
   }

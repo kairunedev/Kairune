@@ -25,12 +25,15 @@ function nowIso() {
 //   spend.threshold    — an approved spend pushed budget past the alert line
 //   spend.velocity     — a spend was denied by the burst (velocity) limit
 //   agent.tier_changed — an agent's trust tier moved up or down after a rescore
+//   agent.rank_changed — an agent's leaderboard rank moved up or down after a
+//                        rescore (its score changed and its position shifted)
 const EVENTS = Object.freeze([
   'spend.approved',
   'spend.blocked',
   'spend.threshold',
   'spend.velocity',
   'agent.tier_changed',
+  'agent.rank_changed',
 ]);
 
 // Delivery tuning. Kept short: on serverless the spend request awaits delivery,
