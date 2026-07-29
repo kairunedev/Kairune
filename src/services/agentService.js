@@ -197,6 +197,102 @@ async function getRank(idOrHandle) {
 }
 
 /**
+ * Shape a raw agent row into the compact neighbour view used by
+ * getRankNeighbors — just enough to render "who's above / below me".
+ * @param {object} row
+ * @param {number} rank
+ */
+function neighborView(row, rank) {
+  return {
+    rank,
+    handle: row.handle,
+    score: Number(row.score) || 0,
+    tier: Number(row.tier) || 0,
+    label: TIER_LABELS[Number(row.tier) || 0] || 'UNRATED',
+  };
+}
+
+/**
+ * The agents immediately above and below this one on the leaderboard — the
+ * "who am I chasing, who is chasing me" view. Above = the agent one rank
+ * better (the target to overtake); below = the agent one rank worse (the
+ * challenger on your heels). Uses the EXACT same universe and ordering as the
+ * leaderboard / getRank (non-demo, score DESC, created_at ASC, id ASC).
+ *
+ * `gap_above` is how many score points you need to catch the agent above you;
+ * `gap_below` is your current lead over the agent below you. Both are null at
+ * the edges (the #1 agent has no one above; the last agent has no one below).
+ *
+ * Demo/test agents (no public standing) return null, matching getRank.
+ *
+ * @param {string} idOrHandle
+ * @returns {Promise<{self:object, above:object|null, below:object|null,
+ *   gap_above:number|null, gap_below:number|null}|null>}
+ */
+async function getRankNeighbors(idOrHandle) {
+  const agent = await getAgent(idOrHandle);
+  if (!agent) return null;
+  const self = await getRank(agent.id);
+  if (!self) return null;
+
+  const db = await getDb();
+
+  // The agent one rank BETTER than us: the worst-ranked agent that still
+  // outranks us. We reverse the leaderboard ordering over the "ahead" set and
+  // take the first row — that's the one directly above us. The predicate and
+  // tiebreak (score, created_at, id) mirror getRank exactly for consistency.
+  const aboveRow = (
+    await db.execute({
+      sql: `SELECT handle, score, tier FROM agents
+            WHERE 1=1${DEMO_EXCLUSION_SQL}
+              AND (
+                score > ?
+                OR (score = ? AND created_at < ?)
+                OR (score = ? AND created_at = ? AND id < ?)
+              )
+            ORDER BY score ASC, created_at DESC, id DESC
+            LIMIT 1`,
+      args: [
+        agent.score,
+        agent.score, agent.created_at,
+        agent.score, agent.created_at, agent.id,
+      ],
+    })
+  ).rows[0];
+
+  // The agent one rank WORSE than us: the best-ranked agent that we outrank.
+  const belowRow = (
+    await db.execute({
+      sql: `SELECT handle, score, tier FROM agents
+            WHERE 1=1${DEMO_EXCLUSION_SQL}
+              AND (
+                score < ?
+                OR (score = ? AND created_at > ?)
+                OR (score = ? AND created_at = ? AND id > ?)
+              )
+            ORDER BY score DESC, created_at ASC, id ASC
+            LIMIT 1`,
+      args: [
+        agent.score,
+        agent.score, agent.created_at,
+        agent.score, agent.created_at, agent.id,
+      ],
+    })
+  ).rows[0];
+
+  const above = aboveRow ? neighborView(aboveRow, self.rank - 1) : null;
+  const below = belowRow ? neighborView(belowRow, self.rank + 1) : null;
+
+  return {
+    self,
+    above,
+    below,
+    gap_above: above ? above.score - self.score : null,
+    gap_below: below ? self.score - below.score : null,
+  };
+}
+
+/**
  * Public platform statistics. Applies the SAME demo/test exclusion as the
  * leaderboard so the headline numbers match what visitors actually see.
  * Set includeDemo=true to count everything (internal/debug use).
@@ -433,6 +529,7 @@ module.exports = {
   getAgentByWallet,
   listAgents,
   getRank,
+  getRankNeighbors,
   getStats,
   setAgentStatus,
   recalcAgent,

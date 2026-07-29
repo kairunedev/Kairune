@@ -10,6 +10,7 @@
  *   GET    /api/agents/:id                    agent detail + score breakdown
  *   GET    /api/agents/:id/trust-sources      issuer-diversity of verified trust
  *   GET    /api/agents/:id/rank               live leaderboard rank + percentile
+ *   GET    /api/agents/:id/rank/neighbors     agents ranked just above & below
  *   PATCH  /api/agents/:id/status             suspend / activate an agent
  *   DELETE /api/agents/:id                    delete an agent
  *   GET    /api/agents/:id/attestations       attestation history
@@ -96,6 +97,7 @@ router.get('/meta', (req, res) => {
     verify_endpoint: '/api/verify',
     trust_sources_endpoint: '/api/agents/:id/trust-sources',
     rank_endpoint: '/api/agents/:id/rank',
+    rank_neighbors_endpoint: '/api/agents/:id/rank/neighbors',
     rank_badge_endpoint: '/a/:handle/rank.svg',
     wallet_lookup_endpoint: '/api/wallets/:wallet',
     spend_preview_endpoint: '/api/permissions/:pid/spends/preview',
@@ -287,6 +289,30 @@ router.get(
       return res.json({ ranked: false, handle: agent.handle, rank: null });
     }
     res.json({ ranked: true, ...rank });
+  })
+);
+
+// Rank neighbours — "who am I chasing, who is chasing me". Returns the agent
+// one rank above (the target to overtake) and one rank below (the challenger
+// on your heels), with the score gaps to each. Same universe/ordering as the
+// leaderboard and GET /api/agents/:id/rank. Public, no auth. 404 for an
+// unknown agent; a demo/test agent (no public standing) returns ranked:false.
+router.get(
+  '/agents/:id/rank/neighbors',
+  wrap(async (req, res) => {
+    const agent = await agentService.getAgent(req.params.id);
+    if (!agent) {
+      const err = new Error('Agent not found');
+      err.status = 404;
+      throw err;
+    }
+    // Read stored scores as-is (same rationale as /rank): rescoring only this
+    // agent would compare a fresh score against everyone else's stored score.
+    const neighbors = await agentService.getRankNeighbors(agent.id);
+    if (!neighbors) {
+      return res.json({ ranked: false, handle: agent.handle, self: null });
+    }
+    res.json({ ranked: true, ...neighbors });
   })
 );
 
