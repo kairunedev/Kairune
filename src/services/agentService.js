@@ -10,6 +10,8 @@ const {
   computeScore,
   suggestedDailyCeiling,
   TIER_LABELS,
+  TIER_THRESHOLDS,
+  MAX_SCORE,
 } = require('./trustScore');
 const webhookService = require('./webhookService');
 
@@ -293,6 +295,65 @@ async function getRankNeighbors(idOrHandle) {
 }
 
 /**
+ * How far along is this agent within its trust tier, and what does the next
+ * tier cost? A rank tells you where you sit relative to others; this tells you
+ * where you sit relative to the *bar*. Tiers are score bands
+ * (TIER_THRESHOLDS = [0, 250, 500, 750, 900]); this reports the floor of the
+ * current band, the threshold of the next tier, how many points remain to
+ * reach it, and a 0..100 progress value through the current band.
+ *
+ * At the top tier (PRIME) there is no next threshold: `next_tier` is null,
+ * `points_to_next` is 0, and progress is measured across the final open-ended
+ * band up to MAX_SCORE so a maxed-out agent reads as 100.
+ *
+ * Unlike rank, this needs no cross-agent comparison, so it is well-defined for
+ * EVERY agent — including demo/test agents, which have a real score even
+ * without public standing. The route reads the stored score as-is.
+ *
+ * @param {string} idOrHandle
+ * @returns {Promise<{handle:string, score:number, tier:number, label:string,
+ *   tier_floor:number, next_tier:number|null, next_label:string|null,
+ *   next_threshold:number|null, points_to_next:number, progress:number}|null>}
+ */
+async function getTierProgress(idOrHandle) {
+  const agent = await getAgent(idOrHandle);
+  if (!agent) return null;
+
+  const score = Number(agent.score) || 0;
+  const tier = Number(agent.tier) || 0;
+  const tierFloor = TIER_THRESHOLDS[tier] ?? 0;
+
+  const isTop = tier >= TIER_THRESHOLDS.length - 1;
+  // The ceiling of the current band: the next tier's threshold, or MAX_SCORE
+  // for the open-ended top band. This is what progress is measured against.
+  const bandCeiling = isTop ? MAX_SCORE : TIER_THRESHOLDS[tier + 1];
+  const nextThreshold = isTop ? null : TIER_THRESHOLDS[tier + 1];
+
+  // Points still needed to cross into the next tier (0 at the top).
+  const pointsToNext = nextThreshold === null ? 0 : Math.max(0, nextThreshold - score);
+
+  // Progress through the current band, clamped to 0..100 and rounded to one
+  // decimal. Guard against a zero-width band (shouldn't happen with the
+  // current thresholds).
+  const span = bandCeiling - tierFloor;
+  const pct = span > 0 ? ((score - tierFloor) / span) * 100 : 100;
+  const progress = Math.round(Math.min(100, Math.max(0, pct)) * 10) / 10;
+
+  return {
+    handle: agent.handle,
+    score,
+    tier,
+    label: TIER_LABELS[tier] || 'UNRATED',
+    tier_floor: tierFloor,
+    next_tier: isTop ? null : tier + 1,
+    next_label: isTop ? null : TIER_LABELS[tier + 1] || null,
+    next_threshold: nextThreshold,
+    points_to_next: pointsToNext,
+    progress,
+  };
+}
+
+/**
  * Public platform statistics. Applies the SAME demo/test exclusion as the
  * leaderboard so the headline numbers match what visitors actually see.
  * Set includeDemo=true to count everything (internal/debug use).
@@ -530,6 +591,7 @@ module.exports = {
   listAgents,
   getRank,
   getRankNeighbors,
+  getTierProgress,
   getStats,
   setAgentStatus,
   recalcAgent,

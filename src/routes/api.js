@@ -11,6 +11,7 @@
  *   GET    /api/agents/:id/trust-sources      issuer-diversity of verified trust
  *   GET    /api/agents/:id/rank               live leaderboard rank + percentile
  *   GET    /api/agents/:id/rank/neighbors     agents ranked just above & below
+ *   GET    /api/agents/:id/tier               tier progress + points to next tier
  *   PATCH  /api/agents/:id/status             suspend / activate an agent
  *   DELETE /api/agents/:id                    delete an agent
  *   GET    /api/agents/:id/attestations       attestation history
@@ -98,6 +99,7 @@ router.get('/meta', (req, res) => {
     trust_sources_endpoint: '/api/agents/:id/trust-sources',
     rank_endpoint: '/api/agents/:id/rank',
     rank_neighbors_endpoint: '/api/agents/:id/rank/neighbors',
+    tier_progress_endpoint: '/api/agents/:id/tier',
     rank_badge_endpoint: '/a/:handle/rank.svg',
     wallet_lookup_endpoint: '/api/wallets/:wallet',
     spend_preview_endpoint: '/api/permissions/:pid/spends/preview',
@@ -313,6 +315,25 @@ router.get(
       return res.json({ ranked: false, handle: agent.handle, self: null });
     }
     res.json({ ranked: true, ...neighbors });
+  })
+);
+
+// Tier progress — how far this agent is through its current trust tier and
+// what the next tier costs. Where /rank is relative to other agents, this is
+// relative to the fixed bar: current tier floor, next threshold, points to
+// go, and a 0..100 progress through the band. Well-defined for every agent
+// (score exists even without public standing), so no demo exclusion here.
+// Public, no auth. 404 for an unknown agent. Reads the stored score as-is.
+router.get(
+  '/agents/:id/tier',
+  wrap(async (req, res) => {
+    const progress = await agentService.getTierProgress(req.params.id);
+    if (!progress) {
+      const err = new Error('Agent not found');
+      err.status = 404;
+      throw err;
+    }
+    res.json(progress);
   })
 );
 
