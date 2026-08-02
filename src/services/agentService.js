@@ -13,6 +13,7 @@ const {
   TIER_THRESHOLDS,
   MAX_SCORE,
 } = require('./trustScore');
+const { planNextTier } = require('./tierPlanner');
 const webhookService = require('./webhookService');
 
 function nowIso() {
@@ -354,6 +355,42 @@ async function getTierProgress(idOrHandle) {
 }
 
 /**
+ * Actionable route to the next trust tier for one agent.
+ *
+ * Where `getTierProgress` reports the *distance* to the next tier, this reports
+ * the *route*: how many attestations of each kind it would take to get there,
+ * how much faster verified-and-spread-out trust is than verified-from-one-place,
+ * and how many negative events would cost the agent its current tier.
+ *
+ * The plan is produced by re-running the real scoring engine against the
+ * agent's real attestation history plus hypothetical events — not by dividing
+ * points by weights — so it stays exact even though the score is non-linear
+ * (log volume bonus, per-issuer cap, asymmetric negatives).
+ *
+ * Read-only: nothing is written and no score is mutated. Well-defined for every
+ * agent (no cross-agent comparison), so demo agents work too.
+ *
+ * @param {string} idOrHandle
+ * @param {{nowMs?:number}} [opts] clock override for deterministic tests
+ * @returns {Promise<object|null>} null when the agent does not exist
+ */
+async function getNextSteps(idOrHandle, { nowMs } = {}) {
+  const agent = await getAgent(idOrHandle);
+  if (!agent) return null;
+
+  const db = await getDb();
+  // Same projection recalcAgent feeds to computeScore, so the simulation runs
+  // against exactly the data that produced the stored score.
+  const res = await db.execute({
+    sql: `SELECT kind, weight, created_at, verification_status, issuer_id
+          FROM attestations WHERE agent_id = ?`,
+    args: [agent.id],
+  });
+
+  return planNextTier(agent, res.rows, nowMs);
+}
+
+/**
  * Public platform statistics. Applies the SAME demo/test exclusion as the
  * leaderboard so the headline numbers match what visitors actually see.
  * Set includeDemo=true to count everything (internal/debug use).
@@ -592,6 +629,7 @@ module.exports = {
   getRank,
   getRankNeighbors,
   getTierProgress,
+  getNextSteps,
   getStats,
   setAgentStatus,
   recalcAgent,

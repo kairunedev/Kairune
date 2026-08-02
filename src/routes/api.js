@@ -12,6 +12,7 @@
  *   GET    /api/agents/:id/rank               live leaderboard rank + percentile
  *   GET    /api/agents/:id/rank/neighbors     agents ranked just above & below
  *   GET    /api/agents/:id/tier               tier progress + points to next tier
+ *   GET    /api/agents/:id/next-steps         simulated route to the next tier + downgrade risk
  *   PATCH  /api/agents/:id/status             suspend / activate an agent
  *   DELETE /api/agents/:id                    delete an agent
  *   GET    /api/agents/:id/attestations       attestation history
@@ -100,6 +101,7 @@ router.get('/meta', (req, res) => {
     rank_endpoint: '/api/agents/:id/rank',
     rank_neighbors_endpoint: '/api/agents/:id/rank/neighbors',
     tier_progress_endpoint: '/api/agents/:id/tier',
+    next_steps_endpoint: '/api/agents/:id/next-steps',
     rank_badge_endpoint: '/a/:handle/rank.svg',
     wallet_lookup_endpoint: '/api/wallets/:wallet',
     spend_preview_endpoint: '/api/permissions/:pid/spends/preview',
@@ -334,6 +336,34 @@ router.get(
       throw err;
     }
     res.json(progress);
+  })
+);
+
+// Next steps — the actionable companion to /tier.
+//
+// /tier says "94 points to PRIME". This says *how to get them*: for every
+// positive attestation kind, how many events it takes to cross the next
+// threshold, compared across three sourcing strategies (verified from distinct
+// issuers / verified from one issuer / unverified). It also reports the
+// downside: how many disputes, chargebacks or anomaly flags would drop the
+// agent out of its current tier.
+//
+// The numbers come from re-running the real scoring engine over the agent's
+// real attestation history plus hypothetical events, so they account for the
+// log volume bonus, the per-issuer cap and the asymmetric negative weighting
+// that make naive points/weight arithmetic wrong.
+//
+// Public, read-only, no auth, nothing persisted. 404 for an unknown agent.
+router.get(
+  '/agents/:id/next-steps',
+  wrap(async (req, res) => {
+    const plan = await agentService.getNextSteps(req.params.id);
+    if (!plan) {
+      const err = new Error('Agent not found');
+      err.status = 404;
+      throw err;
+    }
+    res.json(plan);
   })
 );
 
