@@ -217,6 +217,65 @@ export interface WalletProfile {
   message?: string
 }
 
+export type CounterpartyCheckStatus = 'pass' | 'warn' | 'fail'
+export type CounterpartyVerdict = 'proceed' | 'review' | 'decline'
+
+/** One named check that fed into the counterparty verdict. */
+export interface CounterpartyCheck {
+  id: string
+  label: string
+  status: CounterpartyCheckStatus
+  detail: string
+}
+
+/**
+ * The result of a pre-flight counterparty check — the go/no-go an agent gets
+ * before paying another agent. `verdict` is the headline; `checks` explains it.
+ * An unregistered counterparty resolves to `registered: false` + a `decline`
+ * verdict rather than throwing.
+ */
+export interface CounterpartyReport {
+  registered: boolean
+  /** proceed = safe · review = caution / human-in-the-loop · decline = do not pay. */
+  verdict: CounterpartyVerdict
+  /** The amount that was assessed, or null when none was supplied. */
+  requested_amount: number | null
+  /** 0..100 independence of the counterparty's verified trust (anti-farming). */
+  trust_independence: number
+  /** Recommended max exposure (USD) for a single transaction with this agent. */
+  suggested_max_amount: number
+  /** Whether requested_amount fits the recommendation; null when no amount given. */
+  within_suggested_ceiling: boolean | null
+  /** Codes of every check that did not pass, worst-first. */
+  reasons: string[]
+  /** Every check that ran, in evaluation order. */
+  checks: CounterpartyCheck[]
+  /** Present only when registered === true. */
+  counterparty?: {
+    agent_id: string
+    handle: string
+    wallet: string | null
+    status: 'active' | 'suspended'
+    score: number
+    tier: number
+    tier_label: string
+    max_score: number
+  }
+  /** Raw signals behind the verdict; null when unregistered. */
+  signals?: {
+    tier: number
+    trust_independence: number
+    distinct_issuers: number
+    verified_count: number
+    unverified_count: number
+    recent_severe_negatives: number
+    recent_disputes: number
+    negative_lookback_days: number
+  } | null
+  /** Present only when registered === false. */
+  wallet?: string | null
+}
+
 // ---------------------------------------------------------------------------
 // Error
 // ---------------------------------------------------------------------------
@@ -336,6 +395,28 @@ export class Kairune {
       }
       throw e
     }
+  }
+
+  /**
+   * Pre-flight trust check before paying another agent.
+   *
+   * The one call for agent-to-agent commerce: name a counterparty (by id,
+   * handle, or `0x…` wallet) and optionally how much you mean to spend, and get
+   * a single `proceed` / `review` / `decline` verdict plus the checks behind it
+   * (status, tier, recent negatives, trust independence, exposure vs ceiling).
+   *
+   * A valid-but-unregistered wallet resolves to `{ registered: false, verdict:
+   * 'decline' }` instead of throwing, so "unknown counterparty" is a normal
+   * answer you can branch on. An unresolvable non-wallet reference throws
+   * KairuneError(404).
+   */
+  async checkCounterparty(
+    counterparty: string,
+    opts: { amount?: number } = {}
+  ): Promise<CounterpartyReport> {
+    const body: { counterparty: string; amount?: number } = { counterparty }
+    if (opts.amount != null) body.amount = opts.amount
+    return this.request<CounterpartyReport>('POST', '/counterparty/check', body)
   }
 
   /** Get attestation history for an agent. */

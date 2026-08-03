@@ -13,6 +13,7 @@
  *   GET    /api/agents/:id/rank/neighbors     agents ranked just above & below
  *   GET    /api/agents/:id/tier               tier progress + points to next tier
  *   GET    /api/agents/:id/next-steps         simulated route to the next tier + downgrade risk
+ *   POST   /api/counterparty/check           pre-flight go/no-go before paying another agent
  *   PATCH  /api/agents/:id/status             suspend / activate an agent
  *   DELETE /api/agents/:id                    delete an agent
  *   GET    /api/agents/:id/attestations       attestation history
@@ -102,6 +103,7 @@ router.get('/meta', (req, res) => {
     rank_neighbors_endpoint: '/api/agents/:id/rank/neighbors',
     tier_progress_endpoint: '/api/agents/:id/tier',
     next_steps_endpoint: '/api/agents/:id/next-steps',
+    counterparty_check_endpoint: '/api/counterparty/check',
     rank_badge_endpoint: '/a/:handle/rank.svg',
     wallet_lookup_endpoint: '/api/wallets/:wallet',
     spend_preview_endpoint: '/api/permissions/:pid/spends/preview',
@@ -364,6 +366,43 @@ router.get(
       throw err;
     }
     res.json(plan);
+  })
+);
+
+// Counterparty check — the one call an agent makes BEFORE it pays another agent.
+//
+// Built for agent-to-agent commerce (e.g. an ACP job where one agent hires and
+// pays another): instead of stitching together score + tier + diversity +
+// recent negatives + a spend ceiling itself, the payer names the counterparty
+// (by id, handle, or 0x… wallet) and optionally the amount it means to spend,
+// and gets one verdict — proceed / review / decline — plus the exact checks
+// that produced it. A valid but unregistered wallet is a first-class "decline"
+// (no basis to trust), not a 404.
+//
+// Public, read-only, no auth, nothing persisted. Deterministic: the verdict is
+// a pure function of the counterparty's stored profile and attestation history.
+router.post(
+  '/counterparty/check',
+  wrap(async (req, res) => {
+    requireFields(req.body, ['counterparty']);
+    const { counterparty, amount = null } = req.body;
+
+    if (amount != null) {
+      const n = Number(amount);
+      if (!Number.isFinite(n) || n <= 0) {
+        const err = new Error('amount, when provided, must be a positive number');
+        err.status = 400;
+        throw err;
+      }
+    }
+
+    const result = await agentService.checkCounterparty(counterparty, { amount });
+    if (!result) {
+      const err = new Error('Counterparty not found');
+      err.status = 404;
+      throw err;
+    }
+    res.json(result);
   })
 );
 

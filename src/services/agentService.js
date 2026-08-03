@@ -14,7 +14,12 @@ const {
   MAX_SCORE,
 } = require('./trustScore');
 const { planNextTier } = require('./tierPlanner');
+const { assessCounterparty } = require('./counterpartyService');
 const webhookService = require('./webhookService');
+
+// A Robinhood Chain (EVM) address: 0x + 40 hex chars. Used to decide whether a
+// counterparty reference should be resolved by wallet vs id/handle.
+const WALLET_REF_RE = /^0x[a-fA-F0-9]{40}$/;
 
 function nowIso() {
   return new Date().toISOString();
@@ -391,6 +396,59 @@ async function getNextSteps(idOrHandle, { nowMs } = {}) {
 }
 
 /**
+ * Pre-flight trust check for transacting with a counterparty agent.
+ *
+ * This is the one call an agent makes before it *pays another agent*: it names
+ * the counterparty (by id, handle, or wallet) and optionally how much it means
+ * to spend, and gets back a single `proceed` / `review` / `decline` verdict
+ * plus the individual checks that produced it.
+ *
+ * Resolution is reference-shape aware: a `0x…` reference is looked up by wallet
+ * (the identity a payer usually holds), anything else by id or handle. A valid
+ * but unregistered wallet is NOT null here — it resolves to a `decline`
+ * verdict ("no basis to trust"), because that is the useful answer for a payer.
+ * A reference that is neither a wallet nor a known id/handle returns null so
+ * the route can 404.
+ *
+ * Read-only: composes the stored profile and raw attestation history through
+ * the pure {@link assessCounterparty} engine. Nothing is written.
+ *
+ * @param {string} ref counterparty id, handle, or wallet address
+ * @param {{amount?:number|null, nowMs?:number}} [opts]
+ * @returns {Promise<object|null>} verdict payload, or null for an unresolvable
+ *   non-wallet reference
+ */
+async function checkCounterparty(ref, { amount = null, nowMs } = {}) {
+  const raw = String(ref ?? '').trim();
+  const isWallet = WALLET_REF_RE.test(raw);
+
+  const agent = isWallet
+    ? await getAgentByWallet(raw.toLowerCase())
+    : await getAgent(raw);
+
+  // Unknown, non-wallet reference: nothing to assess and no meaningful
+  // "unregistered wallet" answer to give → let the caller 404.
+  if (!agent && !isWallet) return null;
+
+  let rows = [];
+  if (agent) {
+    const db = await getDb();
+    const res = await db.execute({
+      sql: `SELECT kind, weight, created_at, verification_status, issuer_id
+            FROM attestations WHERE agent_id = ?`,
+      args: [agent.id],
+    });
+    rows = res.rows;
+  }
+
+  return assessCounterparty(agent, rows, {
+    amount,
+    nowMs,
+    wallet: isWallet ? raw.toLowerCase() : null,
+  });
+}
+
+/**
  * Public platform statistics. Applies the SAME demo/test exclusion as the
  * leaderboard so the headline numbers match what visitors actually see.
  * Set includeDemo=true to count everything (internal/debug use).
@@ -630,6 +688,7 @@ module.exports = {
   getRankNeighbors,
   getTierProgress,
   getNextSteps,
+  checkCounterparty,
   getStats,
   setAgentStatus,
   recalcAgent,

@@ -45,6 +45,13 @@ await k.getBudget(pid)    // remaining budget
 // Dry-run a charge — go/no-go without spending anything
 const check = await k.previewSpend(pid, { amount: 30 })
 if (!check.allowed) console.log('would be blocked:', check.reason)
+
+// Pre-flight before paying ANOTHER agent (agent-to-agent commerce / ACP):
+// one call → proceed | review | decline, plus the checks behind it.
+const cp = await k.checkCounterparty('0xtheir_wallet', { amount: 50 })
+if (cp.verdict === 'decline') return          // don't pay
+if (cp.verdict === 'review') { /* human-in-the-loop / smaller amount */ }
+// cp.suggested_max_amount = recommended per-tx exposure for this counterparty
 ```
 
 ## Write operations (admin key required)
