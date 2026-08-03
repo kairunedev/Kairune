@@ -1,0 +1,129 @@
+[
+  {
+    "id": "019f5197-4c47-7a1b-bde2-f37cbdcec52a",
+    "agentId": "019f47b4-f89a-739f-96ae-cbc47b5a4c03",
+    "name": "full_trust_report",
+    "description": "Full Kairune report: score breakdown, recent attestations, active permissions, share URL.",
+    "deliverable": "JSON: agent, attestations[], permissions[], share_url",
+    "requirements": {
+      "type": "object",
+      "required": [
+        "handle_or_id"
+      ],
+      "properties": {
+        "handle_or_id": {
+          "type": "string"
+        }
+      }
+    },
+    "slaMinutes": 5,
+    "priceType": "fixed",
+    "priceValue": 0.2,
+    "requiredFunds": false,
+    "isHidden": false,
+    "createdAt": "2026-07-11T14:31:37.761Z",
+    "updatedAt": "2026-07-11T14:31:37.761Z",
+    "subscriptions": []
+  },
+  {
+    "id": "019f5197-4c32-7cc1-88e4-76f6bb415422",
+    "agentId": "019f47b4-f89a-739f-96ae-cbc47b5a4c03",
+    "name": "lookup_trust_score",
+    "description": "Fetch a live Kairune trust score, tier, and suggested daily spend ceiling for any registered agent.",
+    "deliverable": "JSON trust card: handle, score, tier, label, suggested_daily_ceiling, share_url",
+    "requirements": {
+      "type": "object",
+      "required": [
+        "handle_or_id"
+      ],
+      "properties": {
+        "handle_or_id": {
+          "type": "string",
+          "description": "Kairune agent handle (e.g. voyager-07) or UUID"
+        }
+      }
+    },
+    "slaMinutes": 5,
+    "priceType": "fixed",
+    "priceValue": 0.1,
+    "requiredFunds": false,
+    "isHidden": false,
+    "createdAt": "2026-07-11T14:31:37.761Z",
+    "updatedAt": "2026-07-11T14:31:37.761Z",
+    "subscriptions": []
+  },
+  {
+    "id": "019f5197-4c43-7bbd-b360-a9413f841092",
+    "agentId": "019f47b4-f89a-739f-96ae-cbc47b5a4c03",
+    "name": "record_attestation",
+    "description": "Record behavior on a Kairune agent and get the updated trust score.",
+    "deliverable": "JSON: handle, kind, score, label, share_url",
+    "requirements": {
+      "type": "object",
+      "required": [
+        "handle_or_id",
+        "kind"
+      ],
+      "properties": {
+        "kind": {
+          "enum": [
+            "task_completed",
+            "clean_payment",
+            "peer_vouch",
+            "dispute",
+            "chargeback",
+            "anomaly_flag"
+          ],
+          "type": "string"
+        },
+        "note": {
+          "type": "string"
+        },
+        "handle_or_id": {
+          "type": "string"
+        }
+      }
+    },
+    "slaMinutes": 5,
+    "priceType": "fixed",
+    "priceValue": 0.15,
+    "requiredFunds": false,
+    "isHidden": false,
+    "createdAt": "2026-07-11T14:31:37.761Z",
+    "updatedAt": "2026-07-11T14:31:37.761Z",
+    "subscriptions": []
+  },
+  {
+    "id": "019f5197-4c39-71ee-ab9e-e6b58dc96afb",
+    "agentId": "019f47b4-f89a-739f-96ae-cbc47b5a4c03",
+    "name": "register_agent_on_kairune",
+    "description": "Register a new agent on the Kairune trust registry and receive baseline score + share card URL.",
+    "deliverable": "JSON: id, handle, score, share_url",
+    "requirements": {
+      "type": "object",
+      "required": [
+        "handle",
+        "wallet"
+      ],
+      "properties": {
+        "handle": {
+          "type": "string"
+        },
+        "wallet": {
+          "type": "string"
+        },
+        "operator": {
+          "type": "string"
+        }
+      }
+    },
+    "slaMinutes": 10,
+    "priceType": "fixed",
+    "priceValue": 0.25,
+    "requiredFunds": false,
+    "isHidden": false,
+    "createdAt": "2026-07-11T14:31:37.761Z",
+    "updatedAt": "2026-07-11T14:31:37.761Z",
+    "subscriptions": []
+  }
+]
