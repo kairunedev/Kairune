@@ -90,3 +90,19 @@ rolls over.
 ```bash
 KAIRUNE_AGENT_ID=<id> npx tsx examples/05-velocity-guard.ts
 ```
+
+### `06-counterparty-check.ts`
+
+The pre-flight pattern for agent-to-agent commerce: run one `checkCounterparty`
+**before** paying or trading with another agent to get a single verdict —
+`proceed` / `review` / `decline` — plus every check that produced it. This is
+what a fail-closed safety gate (e.g. an autonomous trading runtime) wires in
+right before it signs: the runtime already enforces its own limits, this covers
+the *other* side (registered? trusted? recent chargebacks/anomalies?). No admin
+key needed — it's a public read, and the gate maps the verdict onto
+sign / park / block locally.
+
+```bash
+# a live PRIME agent can still return decline — try it
+COUNTERPARTY=0xtheir_wallet AMOUNT=250 npx tsx examples/06-counterparty-check.ts
+```

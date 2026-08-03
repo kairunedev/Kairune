@@ -40,8 +40,10 @@ function detectOffering(name) {
   if (raw === 'register_agent_on_kairune' || raw === 'register_agent') return 'register-agent';
   if (raw === 'record_attestation') return 'record-attestation';
   if (raw === 'full_trust_report') return 'full-trust-report';
+  if (raw === 'counterparty_check' || raw === 'counterpartycheck') return 'counterparty-check';
 
   const n = normalizeOfferingName(name);
+  if (n.includes('counterparty') || n.includes('pre flight') || n.includes('go no go')) return 'counterparty-check';
   if (n.includes('lookup') || n.includes('trust score')) return 'lookup-trust-score';
   if (n.includes('register')) return 'register-agent';
   if (n.includes('attestation') || n.includes('record')) return 'record-attestation';
@@ -110,6 +112,29 @@ async function fulfill(offeringId, req) {
         attestations: data.attestations,
         permissions: data.permissions,
         share_url: shareUrl(data.agent.handle),
+      };
+    }
+    case 'counterparty-check': {
+      const counterparty = req.counterparty || req.handle_or_id || req.wallet;
+      if (!counterparty) throw new Error('counterparty (wallet, handle, or id) required');
+      const body = { counterparty };
+      if (req.amount != null) body.amount = Number(req.amount);
+      const data = await kairune('/counterparty/check', {
+        method: 'POST',
+        body: JSON.stringify(body),
+      });
+      return {
+        registered: data.registered,
+        verdict: data.verdict,
+        requested_amount: data.requested_amount,
+        suggested_max_amount: data.suggested_max_amount,
+        within_suggested_ceiling: data.within_suggested_ceiling,
+        trust_independence: data.trust_independence,
+        reasons: data.reasons,
+        checks: data.checks,
+        counterparty: data.counterparty || null,
+        signals: data.signals || null,
+        share_url: data.counterparty ? shareUrl(data.counterparty.handle) : null,
       };
     }
     default:

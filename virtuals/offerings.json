@@ -179,6 +179,52 @@
         "requirements_text": "JSON: {\"handle_or_id\":\"voyager-07\"}",
         "deliverable_text": "JSON: agent, attestations[], permissions[], share_url"
       }
+    },
+    {
+      "id": "counterparty-check",
+      "name": "Counterparty Check",
+      "description": "Pre-flight go/no-go before paying or trading with another agent. Composes trust score, tier, account status, recent negatives (90-day decay-aware window), issuer diversity, and a recommended per-tx ceiling into one verdict: proceed / review / decline, with every check that produced it. Deterministic, read-only. A PRIME agent can still return decline.",
+      "price_type": "fixed",
+      "price_usdc": 0.15,
+      "sla_minutes": 5,
+      "requirements": {
+        "type": "object",
+        "properties": {
+          "counterparty": {
+            "type": "string",
+            "description": "The agent to check: Robinhood Chain wallet (0x…), Kairune handle, or id"
+          },
+          "amount": {
+            "type": "number",
+            "description": "Optional amount (USD) you intend to pay — enables the exposure check against the recommended per-tx ceiling"
+          }
+        },
+        "required": ["counterparty"]
+      },
+      "deliverable": {
+        "type": "object",
+        "properties": {
+          "registered": { "type": "boolean" },
+          "verdict": { "type": "string" },
+          "requested_amount": { "type": "number" },
+          "suggested_max_amount": { "type": "number" },
+          "within_suggested_ceiling": { "type": "boolean" },
+          "trust_independence": { "type": "number" },
+          "reasons": { "type": "array" },
+          "checks": { "type": "array" },
+          "counterparty": { "type": "object" },
+          "signals": { "type": "object" },
+          "share_url": { "type": "string" }
+        }
+      },
+      "ui_paste": {
+        "name": "Counterparty Check",
+        "description": "Pre-flight go/no-go before paying another agent. One verdict — proceed / review / decline — with every check that produced it. Deterministic, read-only.",
+        "price": "0.15 USDC",
+        "sla": "5 minutes",
+        "requirements_text": "JSON: {\"counterparty\":\"0xtheir_wallet\",\"amount\":250}",
+        "deliverable_text": "JSON: registered, verdict, suggested_max_amount, within_suggested_ceiling, trust_independence, reasons[], checks[], counterparty, signals, share_url"
+      }
     }
   ],
   "resources": [

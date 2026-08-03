@@ -11,7 +11,7 @@ This folder fixes both:
 
 ## A. Virtuals UI (do this first)
 
-Open your agent → **Agent Info** → **Offerings** → create **4 offerings**.
+Open your agent → **Agent Info** → **Offerings** → create **5 offerings**.
 
 Use values from [`offerings.json`](./offerings.json) (`ui_paste` block), or paste below.
 
@@ -54,6 +54,16 @@ Use values from [`offerings.json`](./offerings.json) (`ui_paste` block), or past
 | SLA | 5 minutes |
 | Requirements | `{"type":"object","properties":{"handle_or_id":{"type":"string"}},"required":["handle_or_id"]}` |
 | Deliverable | JSON: agent, attestations[], permissions[], share_url |
+
+### 5) Counterparty Check
+| Field | Value |
+|--------|--------|
+| Name | Counterparty Check |
+| Description | Pre-flight go/no-go before paying another agent. One verdict — proceed / review / decline — with every check that produced it. Deterministic, read-only. A PRIME agent can still return decline. |
+| Price | **0.15 USDC** |
+| SLA | 5 minutes |
+| Requirements | `{"type":"object","properties":{"counterparty":{"type":"string"},"amount":{"type":"number"}},"required":["counterparty"]}` |
+| Deliverable | JSON: registered, verdict, suggested_max_amount, within_suggested_ceiling, trust_independence, reasons[], checks[], counterparty, signals, share_url |
 
 ### Resources (optional, read-only)
 - `https://kairune.online/api/stats`
