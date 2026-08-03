@@ -93,6 +93,28 @@ const TOOLS = [
     },
     offeringId: 'full-trust-report',
   },
+  {
+    name: 'counterparty_check',
+    description:
+      'Pre-flight go/no-go BEFORE paying or trading with another agent. Call this right before signing a swap, transfer, or payment to another party. Returns a single verdict — proceed / review / decline — plus every check behind it (registration, account status, recent chargebacks/anomalies over a 90-day decay-aware window, tier, trust-source independence, and exposure vs a recommended per-tx ceiling). Deterministic and read-only. Map it onto an approval gate as proceed=sign, review=ask a human, decline=block. A high trust score alone is not a go: a PRIME agent can still return decline.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        counterparty: {
+          type: 'string',
+          description:
+            'The agent on the other side of the transaction: an EVM/Robinhood Chain wallet (0x…), a Kairune handle, or an id.',
+        },
+        amount: {
+          type: 'number',
+          description:
+            'Optional amount (USD) you intend to pay. When supplied, enables the exposure check against the recommended per-tx ceiling.',
+        },
+      },
+      required: ['counterparty'],
+    },
+    offeringId: 'counterparty-check',
+  },
 ];
 
 const RESOURCES = [
