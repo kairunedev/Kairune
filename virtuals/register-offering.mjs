@@ -12,22 +12,24 @@
  * Auth: PUT /agents/offerings is a USER-scoped route. An agent token (from
  * /auth/agent, which the SDK signs with the Privy wallet) authenticates fine
  * but is rejected here with 401 — verified by control test: GET /jobs returns
- * 200 with the same token. So a user token is required. Provide either:
+ * 200 with the same token. So a user token is required.
  *
- *   ACP_USER_TOKEN   — a Virtuals API token (7-day life), used directly; or
- *   PRIVY_TOKEN      — a Privy JWT (~1h) from the browser session, exchanged
- *                      automatically via POST /wallet/auth/privy
+ * Easiest path — log in once, then run this:
+ *   node login.mjs                                    # email OTP, caches token
+ *   node --env-file=.env register-offering.mjs --apply
  *
- * Grab one from a logged-in app.virtuals.io tab:
- *   JSON.parse(localStorage['user-config-storage-v3']).state.token
+ * The token is read automatically from .virtuals-session.json. Overrides, if
+ * you'd rather pass one in:
+ *   ACP_USER_TOKEN   — a Virtuals API token (7-day life), used directly
+ *   PRIVY_TOKEN      — a Privy JWT (~1h), exchanged via /wallet/auth/privy
  *
- * Env: ACP_WALLET_ADDRESS, ACP_WALLET_ID, ACP_SIGNER_PRIVATE_KEY,
- *      plus ACP_USER_TOKEN or PRIVY_TOKEN to actually write.
+ * Env: ACP_WALLET_ADDRESS, ACP_WALLET_ID, ACP_SIGNER_PRIVATE_KEY
  */
 import { PrivyAlchemyEvmProviderAdapter, robinhood } from '@virtuals-protocol/acp-node-v2';
 import { buildAgentAuthTypedData } from '@virtuals-protocol/acp-node-v2/dist/core/agentAuth.js';
 import { createRequire } from 'module';
 import { writeFileSync } from 'fs';
+import { readSession, sessionIsFresh, exchangePrivyToken } from './login.mjs';
 
 const require = createRequire(import.meta.url);
 const localOfferings = require('./offerings.json');
@@ -127,21 +129,6 @@ if (!APPLY) {
 // 3. Authenticate, then PUT
 // ---------------------------------------------------------------------------
 
-/** Exchange a short-lived Privy JWT for a 7-day Virtuals API token. */
-async function exchangePrivyToken(privyToken) {
-  const res = await fetch(`${API2}/wallet/auth/privy`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ accessToken: privyToken }),
-  });
-  if (!res.ok) {
-    throw new Error(`privy exchange failed: ${res.status} ${res.statusText} ${(await res.text()).slice(0, 200)}`);
-  }
-  const token = (await res.json())?.data?.accessToken;
-  if (!token) throw new Error('privy exchange returned no accessToken');
-  return token;
-}
-
 /** Sign in as the agent via the Privy remote signer (works, but user-scoped routes reject it). */
 async function agentToken() {
   const provider = await PrivyAlchemyEvmProviderAdapter.create({
@@ -172,27 +159,31 @@ let token;
 let authKind;
 
 try {
+  const cached = readSession();
   if (process.env.ACP_USER_TOKEN) {
     token = process.env.ACP_USER_TOKEN;
     authKind = 'user token (ACP_USER_TOKEN)';
   } else if (process.env.PRIVY_TOKEN) {
     token = await exchangePrivyToken(process.env.PRIVY_TOKEN);
     authKind = 'user token (exchanged from PRIVY_TOKEN)';
+  } else if (cached && sessionIsFresh(cached)) {
+    token = cached.accessToken;
+    authKind = `user token (cached session${cached.identity ? `, ${cached.identity}` : ''})`;
   } else {
+    if (cached) console.warn('note           : cached session expired — run `node login.mjs` to refresh');
     const a = await agentToken();
     token = a.token;
     authKind = `agent token (chainId ${a.chainId}) — expected to be rejected by this route`;
   }
 } catch (err) {
   console.error(`\nauth failed    : ${err.message}`);
-  if (/Invalid access token|privy exchange/.test(err.message)) {
+  if (/Invalid access token|exchange/.test(err.message)) {
     console.error(
       [
         '',
-        'A Privy JWT is short-lived (~1h) — grab a fresh one from a logged-in',
-        'app.virtuals.io tab, devtools console:',
+        'A Privy JWT only lives ~1h. Easiest fix — log in from the terminal:',
         '',
-        "  JSON.parse(localStorage['user-config-storage-v3']).state.token",
+        '  node login.mjs',
         '',
         'Nothing was changed. Backup is intact at virtuals/offerings-backup.json',
       ].join('\n'),
@@ -214,20 +205,17 @@ console.log(`PUT /agents/offerings : ${putRes.status} ${putRes.statusText}`);
 if (!putRes.ok) {
   console.error(putBody.slice(0, 600));
   console.error('\nNothing was changed. Backup is intact at virtuals/offerings-backup.json');
-  if (putRes.status === 401 && !process.env.ACP_USER_TOKEN && !process.env.PRIVY_TOKEN) {
+  if (putRes.status === 401) {
     console.error(
       [
         '',
-        'This route needs a USER token; the agent token is not enough.',
-        'From a logged-in app.virtuals.io tab, run in the devtools console:',
+        'This route needs a USER token; an agent token is not enough.',
+        'Log in once from the terminal, then re-run:',
         '',
-        "  JSON.parse(localStorage['user-config-storage-v3']).state.token",
+        '  node login.mjs',
+        '  node --env-file=.env register-offering.mjs --apply',
         '',
-        'Then re-run (the token stays in your shell, it is never committed):',
-        '',
-        '  PRIVY_TOKEN=<paste> node --env-file=.env register-offering.mjs --apply',
-        '',
-        'Or paste an already-exchanged Virtuals token as ACP_USER_TOKEN instead.',
+        'The token is cached in .virtuals-session.json (chmod 600, gitignored).',
       ].join('\n'),
     );
   }
