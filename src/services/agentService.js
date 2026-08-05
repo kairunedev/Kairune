@@ -468,9 +468,16 @@ const MAX_COMPARE_CANDIDATES = 10;
  *
  * Ordering (worst-first fields inverted, so index 0 is the best pick):
  *   1. verdict            proceed > review > decline
- *   2. score              higher is better
- *   3. trust_independence higher is better (harder-to-fake trust)
- *   4. handle             lexical, purely to make ties deterministic
+ *   2. recent severe negatives   fewer chargebacks/anomalies is better
+ *   3. recent disputes           fewer is better
+ *   4. score              higher is better
+ *   5. trust_independence higher is better (harder-to-fake trust)
+ *   6. handle             lexical, purely to make ties deterministic
+ *
+ * Severity outranks score on purpose. Scores saturate — a slate of agents can
+ * all sit at the ceiling while differing wildly in recent harm, and sorting
+ * those by score alone falls through to alphabetical order, which would put the
+ * worst actor at index 0.
  *
  * `recommended` is the first candidate whose verdict is `proceed`. When none
  * qualifies it is null — the honest answer is "none of these clear", not
@@ -532,6 +539,14 @@ async function compareCounterparties(refs, { amount = null, nowMs } = {}) {
     .sort(
       (a, b) =>
         COMPARE_VERDICT_RANK[a.verdict] - COMPARE_VERDICT_RANK[b.verdict] ||
+        // Fewer recent severe negatives (chargebacks/anomalies) first. This sits
+        // above score deliberately: once two candidates share a verdict, "who
+        // has burned fewer people lately" is more decisive than a score that has
+        // already decayed the same events away. Without it, a slate of equally
+        // scored declines would order alphabetically and ranked[0] could be the
+        // *worst* actor — actively misleading for callers that read ranked[0].
+        (a.signals?.recent_severe_negatives ?? 0) - (b.signals?.recent_severe_negatives ?? 0) ||
+        (a.signals?.recent_disputes ?? 0) - (b.signals?.recent_disputes ?? 0) ||
         b.score - a.score ||
         b.trust_independence - a.trust_independence ||
         String(a.handle ?? a.ref).localeCompare(String(b.handle ?? b.ref))

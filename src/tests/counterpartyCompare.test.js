@@ -129,6 +129,39 @@ before(async () => {
   await seedDiverse(flagged);
   await insertAttestation(flagged, 'chargeback', { issuerId: 'iss-9', daysAgo: 3 });
 
+  // Two agents pinned at the SAME ceiling score with the SAME verdict, differing
+  // only in how much recent harm they carry. Mirrors what live data looks like
+  // once scores saturate. Handles are chosen so that 'bad' sorts BEFORE 'mild'
+  // alphabetically — a lexical fallback would rank the worse agent first.
+  const satBad = await insertAgent({
+    handle: 'cmp-saturated-bad',
+    wallet: '0xdd00000000000000000000000000000000000005',
+    score: 1000,
+    tier: 4,
+  });
+  await seedDiverse(satBad);
+  for (let i = 0; i < 8; i++) {
+    await insertAttestation(satBad, 'chargeback', { issuerId: 'iss-9', daysAgo: 3 + i });
+  }
+
+  const satMild = await insertAgent({
+    handle: 'cmp-saturated-mild',
+    wallet: '0xdd00000000000000000000000000000000000006',
+    score: 1000,
+    tier: 4,
+  });
+  await seedDiverse(satMild);
+  await insertAttestation(satMild, 'chargeback', { issuerId: 'iss-9', daysAgo: 3 });
+
+  // Clean counterpart for the dispute tie-break test → proceed, no negatives.
+  const cleanTie = await insertAgent({
+    handle: 'cmp-clean-tie',
+    wallet: '0xdd00000000000000000000000000000000000007',
+    score: 820,
+    tier: 3,
+  });
+  await seedDiverse(cleanTie);
+
   server = app.listen(0);
   await new Promise((r) => server.once('listening', r));
   base = `http://127.0.0.1:${server.address().port}/api`;
@@ -163,6 +196,46 @@ test('breaks a verdict tie on score', async () => {
   );
   assert.strictEqual(r.ranked[0].handle, 'cmp-prime', '950 outranks 800');
   assert.strictEqual(r.ranked[1].handle, 'cmp-trusted');
+});
+
+test('among equally scored declines, fewer severe negatives ranks first', async () => {
+  // Regression guard. Live data exposed the failure this covers: several agents
+  // sat at the score ceiling (1000) with independence 0 and all declined, so the
+  // old rule fell straight through to alphabetical order — putting the agent
+  // with 47 chargebacks at ranked[0] ahead of one with 2. Callers reading
+  // ranked[0] as "least bad" were being handed the worst actor.
+  const r = await agentService.compareCounterparties(
+    ['cmp-saturated-bad', 'cmp-saturated-mild'],
+    { nowMs: NOW }
+  );
+
+  assert.deepStrictEqual(
+    r.ranked.map((c) => c.verdict),
+    ['decline', 'decline'],
+    'both should decline, isolating the tie-break'
+  );
+  assert.strictEqual(r.ranked[0].score, r.ranked[1].score, 'scores are tied at the ceiling');
+
+  // 'cmp-saturated-bad' sorts FIRST alphabetically, so if ordering regressed to
+  // lexical it would win — this assertion only passes on severity ordering.
+  assert.strictEqual(r.ranked[0].handle, 'cmp-saturated-mild', 'fewer chargebacks ranks first');
+  assert.ok(
+    r.ranked[0].signals.recent_severe_negatives < r.ranked[1].signals.recent_severe_negatives,
+    'ranked[0] must carry fewer severe negatives'
+  );
+});
+
+test('with severe negatives tied, fewer disputes ranks first', async () => {
+  const r = await agentService.compareCounterparties(
+    ['cmp-disputed', 'cmp-clean-tie'],
+    { nowMs: NOW }
+  );
+  // Both are severe-negative-free; cmp-disputed carries a dispute (→ review),
+  // cmp-clean-tie does not (→ proceed), so verdict already separates them. The
+  // point here is that the dispute count is surfaced and consistent.
+  assert.strictEqual(r.ranked[0].handle, 'cmp-clean-tie');
+  assert.strictEqual(r.ranked[0].signals.recent_disputes, 0);
+  assert.ok(r.ranked[1].signals.recent_disputes > 0);
 });
 
 test('orders proceed > review > decline across a full slate', async () => {

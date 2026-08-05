@@ -276,8 +276,11 @@ interface CounterpartyCandidate {
 /**
  * The result of comparing several counterparties — "which of these do I pay?".
  *
- * `ranked` is ordered best-first by verdict, then score, then trust
- * independence, then handle (so the order is deterministic across callers).
+ * `ranked` is ordered best-first by verdict, then fewest recent severe
+ * negatives, then fewest disputes, then score, then trust independence, then
+ * handle (so the order is deterministic across callers). Severity outranks
+ * score because scores saturate: a slate can all sit at the ceiling while
+ * differing wildly in recent harm.
  * `recommended` is the best candidate that actually clears; it is `null` when
  * none reach `proceed`, rather than naming a least-bad option.
  */
@@ -352,7 +355,8 @@ declare class Kairune {
      * `checkCounterparty` answers "is this one safe?". When you hold several bids
      * for the same job, the real question is "which of these do I pay?" — this
      * runs the identical assessment on every candidate in a single round-trip and
-     * returns them ranked by one documented rule (verdict, then score, then trust
+     * returns them ranked by one documented rule (verdict, then fewest recent
+     * severe negatives, then fewest disputes, then score, then trust
      * independence, then handle), so two callers comparing the same agents always
      * agree on the winner.
      *

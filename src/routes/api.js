@@ -418,6 +418,12 @@ router.post(
 // candidate and returns them ranked by one explicit, documented rule, so two
 // different callers comparing the same agents always agree.
 //
+// Ranked best-first by: verdict, then fewest recent severe negatives, then
+// fewest disputes, then score, then trust independence, then handle. Severity
+// sits above score because scores saturate — without it a slate of equally
+// scored declines would order alphabetically and ranked[0] could be the worst
+// actor of the set.
+//
 // `recommended` is the best candidate that actually clears (verdict=proceed),
 // or null when none do — deliberately not "the least-bad option".
 // Unresolvable handles land in `unresolved[]` instead of failing the batch.

@@ -118,7 +118,8 @@ var Kairune = class {
    * `checkCounterparty` answers "is this one safe?". When you hold several bids
    * for the same job, the real question is "which of these do I pay?" — this
    * runs the identical assessment on every candidate in a single round-trip and
-   * returns them ranked by one documented rule (verdict, then score, then trust
+   * returns them ranked by one documented rule (verdict, then fewest recent
+   * severe negatives, then fewest disputes, then score, then trust
    * independence, then handle), so two callers comparing the same agents always
    * agree on the winner.
    *
