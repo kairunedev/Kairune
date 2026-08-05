@@ -120,6 +120,48 @@ var Kairune = class {
       throw e;
     }
   }
+  /**
+   * Pre-flight trust check before paying another agent.
+   *
+   * The one call for agent-to-agent commerce: name a counterparty (by id,
+   * handle, or `0x…` wallet) and optionally how much you mean to spend, and get
+   * a single `proceed` / `review` / `decline` verdict plus the checks behind it
+   * (status, tier, recent negatives, trust independence, exposure vs ceiling).
+   *
+   * A valid-but-unregistered wallet resolves to `{ registered: false, verdict:
+   * 'decline' }` instead of throwing, so "unknown counterparty" is a normal
+   * answer you can branch on. An unresolvable non-wallet reference throws
+   * KairuneError(404).
+   */
+  async checkCounterparty(counterparty, opts = {}) {
+    const body = { counterparty };
+    if (opts.amount != null) body.amount = opts.amount;
+    return this.request("POST", "/counterparty/check", body);
+  }
+  /**
+   * Compare competing counterparties and pick one.
+   *
+   * `checkCounterparty` answers "is this one safe?". When you hold several bids
+   * for the same job, the real question is "which of these do I pay?" — this
+   * runs the identical assessment on every candidate in a single round-trip and
+   * returns them ranked by one documented rule (verdict, then score, then trust
+   * independence, then handle), so two callers comparing the same agents always
+   * agree on the winner.
+   *
+   * Read `recommended` for the answer. It is `null` when no candidate reaches
+   * `proceed` — deliberately not "the least-bad one" — so treat null as "reject
+   * this whole slate" and inspect `ranked` only if you want to override that
+   * knowingly.
+   *
+   * Requires 2..10 candidates. A typo'd handle lands in `unresolved` instead of
+   * failing the batch; a valid-but-unregistered `0x…` wallet is still ranked
+   * (as a `decline`). Throws KairuneError(404) only when nothing resolves.
+   */
+  async compareCounterparties(counterparties, opts = {}) {
+    const body = { counterparties };
+    if (opts.amount != null) body.amount = opts.amount;
+    return this.request("POST", "/counterparty/compare", body);
+  }
   /** Get attestation history for an agent. */
   async getAttestations(agentId) {
     const res = await this.request("GET", `/agents/${agentId}/attestations`);

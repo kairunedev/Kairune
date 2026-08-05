@@ -276,6 +276,50 @@ export interface CounterpartyReport {
   wallet?: string | null
 }
 
+/**
+ * One candidate inside a counterparty comparison — the same assessment
+ * `checkCounterparty` returns, flattened and given a `rank`.
+ */
+export interface CounterpartyCandidate {
+  /** The reference as supplied by the caller (id, handle, or wallet). */
+  ref: string
+  /** 1-based position in the ranking; 1 is the best pick. */
+  rank: number
+  handle: string | null
+  registered: boolean
+  verdict: CounterpartyVerdict
+  score: number
+  tier: number
+  tier_label: string | null
+  trust_independence: number
+  suggested_max_amount: number | null
+  within_suggested_ceiling: boolean | null
+  reasons: string[]
+  checks: CounterpartyCheck[]
+  signals: Record<string, number> | Record<string, never>
+}
+
+/**
+ * The result of comparing several counterparties — "which of these do I pay?".
+ *
+ * `ranked` is ordered best-first by verdict, then score, then trust
+ * independence, then handle (so the order is deterministic across callers).
+ * `recommended` is the best candidate that actually clears; it is `null` when
+ * none reach `proceed`, rather than naming a least-bad option.
+ */
+export interface CounterpartyComparison {
+  /** The amount assessed against every candidate, or null when none was given. */
+  requested_amount: number | null
+  /** How many candidates produced a verdict (excludes `unresolved`). */
+  candidate_count: number
+  /** Best candidate with verdict `proceed`, or null when none qualifies. */
+  recommended: CounterpartyCandidate | null
+  /** All assessed candidates, best-first. */
+  ranked: CounterpartyCandidate[]
+  /** References that could not be resolved to an agent (e.g. a typo'd handle). */
+  unresolved: string[]
+}
+
 // ---------------------------------------------------------------------------
 // Error
 // ---------------------------------------------------------------------------
@@ -417,6 +461,34 @@ export class Kairune {
     const body: { counterparty: string; amount?: number } = { counterparty }
     if (opts.amount != null) body.amount = opts.amount
     return this.request<CounterpartyReport>('POST', '/counterparty/check', body)
+  }
+
+  /**
+   * Compare competing counterparties and pick one.
+   *
+   * `checkCounterparty` answers "is this one safe?". When you hold several bids
+   * for the same job, the real question is "which of these do I pay?" — this
+   * runs the identical assessment on every candidate in a single round-trip and
+   * returns them ranked by one documented rule (verdict, then score, then trust
+   * independence, then handle), so two callers comparing the same agents always
+   * agree on the winner.
+   *
+   * Read `recommended` for the answer. It is `null` when no candidate reaches
+   * `proceed` — deliberately not "the least-bad one" — so treat null as "reject
+   * this whole slate" and inspect `ranked` only if you want to override that
+   * knowingly.
+   *
+   * Requires 2..10 candidates. A typo'd handle lands in `unresolved` instead of
+   * failing the batch; a valid-but-unregistered `0x…` wallet is still ranked
+   * (as a `decline`). Throws KairuneError(404) only when nothing resolves.
+   */
+  async compareCounterparties(
+    counterparties: string[],
+    opts: { amount?: number } = {}
+  ): Promise<CounterpartyComparison> {
+    const body: { counterparties: string[]; amount?: number } = { counterparties }
+    if (opts.amount != null) body.amount = opts.amount
+    return this.request<CounterpartyComparison>('POST', '/counterparty/compare', body)
   }
 
   /** Get attestation history for an agent. */

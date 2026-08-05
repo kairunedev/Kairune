@@ -21,6 +21,9 @@ const webhookService = require('./webhookService');
 // counterparty reference should be resolved by wallet vs id/handle.
 const WALLET_REF_RE = /^0x[a-fA-F0-9]{40}$/;
 
+// Verdict ordering for compareCounterparties: lower sorts first (better pick).
+const COMPARE_VERDICT_RANK = { proceed: 0, review: 1, decline: 2 };
+
 function nowIso() {
   return new Date().toISOString();
 }
@@ -448,6 +451,110 @@ async function checkCounterparty(ref, { amount = null, nowMs } = {}) {
   });
 }
 
+// Hard cap on a single compare call. Keeps the endpoint cheap and predictable
+// (each candidate is one profile read + one attestation read) and stops it
+// being used as a bulk-export channel for the whole registry.
+const MAX_COMPARE_CANDIDATES = 10;
+
+/**
+ * Rank several candidate counterparties in one call and name a winner.
+ *
+ * `checkCounterparty` answers "is THIS one safe?". An agent choosing between
+ * competing offers has the harder question: "which of these should I pay?"
+ * Doing that today means N round-trips and re-implementing the tie-breaks
+ * client-side — and every client invents slightly different ones. This runs the
+ * exact same assessment per candidate, then orders them by a single explicit
+ * rule so the choice is reproducible across callers.
+ *
+ * Ordering (worst-first fields inverted, so index 0 is the best pick):
+ *   1. verdict            proceed > review > decline
+ *   2. score              higher is better
+ *   3. trust_independence higher is better (harder-to-fake trust)
+ *   4. handle             lexical, purely to make ties deterministic
+ *
+ * `recommended` is the first candidate whose verdict is `proceed`. When none
+ * qualifies it is null — the honest answer is "none of these clear", not
+ * "here's the least-bad one". Callers that want a fallback can read
+ * `ranked[0]` themselves and make that call knowingly.
+ *
+ * Unresolvable non-wallet references are not an error for the batch: they come
+ * back in `unresolved[]` so one typo can't sink the whole comparison.
+ *
+ * Read-only, nothing persisted, deterministic.
+ *
+ * @param {Array<string>} refs counterparty ids, handles, or wallet addresses
+ * @param {{amount?:number|null, nowMs?:number}} [opts]
+ * @returns {Promise<{requested_amount:number|null, candidate_count:number,
+ *   recommended:object|null, ranked:Array<object>, unresolved:Array<string>}>}
+ */
+async function compareCounterparties(refs, { amount = null, nowMs } = {}) {
+  // De-duplicate so the same agent named twice can't occupy two slots (and
+  // can't be used to inflate the candidate count past the cap).
+  const seen = new Set();
+  const unique = [];
+  for (const ref of refs) {
+    const raw = String(ref ?? '').trim();
+    if (!raw) continue;
+    const key = raw.toLowerCase();
+    if (seen.has(key)) continue;
+    seen.add(key);
+    unique.push(raw);
+  }
+
+  const assessed = [];
+  const unresolved = [];
+
+  for (const ref of unique) {
+    const result = await checkCounterparty(ref, { amount, nowMs });
+    if (!result) {
+      unresolved.push(ref);
+      continue;
+    }
+    assessed.push({ ref, result });
+  }
+
+  const ranked = assessed
+    .map(({ ref, result }) => ({
+      ref,
+      handle: result.counterparty?.handle ?? null,
+      registered: result.registered,
+      verdict: result.verdict,
+      score: result.counterparty?.score ?? 0,
+      tier: result.counterparty?.tier ?? 0,
+      tier_label: result.counterparty?.tier_label ?? null,
+      trust_independence: result.trust_independence ?? 0,
+      suggested_max_amount: result.suggested_max_amount ?? null,
+      within_suggested_ceiling: result.within_suggested_ceiling ?? null,
+      reasons: result.reasons ?? [],
+      checks: result.checks ?? [],
+      signals: result.signals ?? {},
+    }))
+    .sort(
+      (a, b) =>
+        COMPARE_VERDICT_RANK[a.verdict] - COMPARE_VERDICT_RANK[b.verdict] ||
+        b.score - a.score ||
+        b.trust_independence - a.trust_independence ||
+        String(a.handle ?? a.ref).localeCompare(String(b.handle ?? b.ref))
+    );
+
+  ranked.forEach((c, i) => {
+    c.rank = i + 1;
+  });
+
+  const recommended = ranked.find((c) => c.verdict === 'proceed') ?? null;
+
+  return {
+    requested_amount:
+      amount != null && Number.isFinite(Number(amount)) && Number(amount) > 0
+        ? Number(amount)
+        : null,
+    candidate_count: ranked.length,
+    recommended,
+    ranked,
+    unresolved,
+  };
+}
+
 /**
  * Public platform statistics. Applies the SAME demo/test exclusion as the
  * leaderboard so the headline numbers match what visitors actually see.
@@ -689,6 +796,8 @@ module.exports = {
   getTierProgress,
   getNextSteps,
   checkCounterparty,
+  compareCounterparties,
+  MAX_COMPARE_CANDIDATES,
   getStats,
   setAgentStatus,
   recalcAgent,

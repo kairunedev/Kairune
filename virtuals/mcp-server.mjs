@@ -115,6 +115,31 @@ const TOOLS = [
     },
     offeringId: 'counterparty-check',
   },
+  {
+    name: 'counterparty_compare',
+    description:
+      'Choose between competing counterparties in ONE call. Use this when you hold several bids/offers for the same job and must decide who to pay, instead of calling counterparty_check once per candidate. Runs the identical assessment on every candidate and returns them ranked best-first by verdict, then trust score, then trust-source independence. Read "recommended" for the answer: it is the best candidate that actually clears (verdict=proceed), or null when NONE of them clear — null means reject the whole slate and re-bid, not "pick the least-bad one". Accepts 2-10 candidates as wallets (0x…), handles, or ids; a typo\'d handle is returned in "unresolved" rather than failing the batch. Deterministic and read-only.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        counterparties: {
+          type: 'array',
+          items: { type: 'string' },
+          minItems: 2,
+          maxItems: 10,
+          description:
+            'The candidates to compare: EVM/Robinhood Chain wallets (0x…), Kairune handles, or ids. 2 to 10 entries.',
+        },
+        amount: {
+          type: 'number',
+          description:
+            'Optional amount (USD) you intend to pay the winner. When supplied, each candidate is also checked for exposure against its recommended per-tx ceiling, so a candidate can be demoted for being too small to take the job safely.',
+        },
+      },
+      required: ['counterparties'],
+    },
+    offeringId: 'counterparty-compare',
+  },
 ];
 
 const RESOURCES = [

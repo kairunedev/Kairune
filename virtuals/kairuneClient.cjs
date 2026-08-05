@@ -41,8 +41,23 @@ function detectOffering(name) {
   if (raw === 'record_attestation') return 'record-attestation';
   if (raw === 'full_trust_report') return 'full-trust-report';
   if (raw === 'counterparty_check' || raw === 'counterpartycheck') return 'counterparty-check';
+  if (raw === 'counterparty_compare' || raw === 'counterpartycompare') return 'counterparty-compare';
 
   const n = normalizeOfferingName(name);
+  // Compare is checked before the single check so that a phrase containing both
+  // "counterparty" and "compare" routes to the batch handler, not the single one.
+  if (
+    n.includes('compare') ||
+    n.includes('choose') ||
+    n.includes('pick') ||
+    n.includes('rank counterpart') ||
+    n.includes('which provider') ||
+    n.includes('which agent') ||
+    n.includes('best bid') ||
+    n.includes('shortlist')
+  ) {
+    return 'counterparty-compare';
+  }
   if (n.includes('counterparty') || n.includes('pre flight') || n.includes('go no go')) return 'counterparty-check';
   if (n.includes('lookup') || n.includes('trust score')) return 'lookup-trust-score';
   if (n.includes('register')) return 'register-agent';
@@ -135,6 +150,31 @@ async function fulfill(offeringId, req) {
         counterparty: data.counterparty || null,
         signals: data.signals || null,
         share_url: data.counterparty ? shareUrl(data.counterparty.handle) : null,
+      };
+    }
+    case 'counterparty-compare': {
+      // Accept the several shapes an ACP job description might carry the slate
+      // in, plus a comma/whitespace-separated string for plain-text jobs.
+      let list = req.counterparties || req.candidates || req.agents || req.wallets;
+      if (typeof list === 'string') {
+        list = list.split(/[,\s]+/).filter(Boolean);
+      }
+      if (!Array.isArray(list) || list.length < 2) {
+        throw new Error('counterparties must be an array of at least 2 wallets, handles, or ids');
+      }
+      const body = { counterparties: list };
+      if (req.amount != null) body.amount = Number(req.amount);
+      const data = await kairune('/counterparty/compare', {
+        method: 'POST',
+        body: JSON.stringify(body),
+      });
+      return {
+        requested_amount: data.requested_amount,
+        candidate_count: data.candidate_count,
+        recommended: data.recommended,
+        ranked: data.ranked,
+        unresolved: data.unresolved,
+        share_url: data.recommended?.handle ? shareUrl(data.recommended.handle) : null,
       };
     }
     default:

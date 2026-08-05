@@ -14,6 +14,7 @@
  *   GET    /api/agents/:id/tier               tier progress + points to next tier
  *   GET    /api/agents/:id/next-steps         simulated route to the next tier + downgrade risk
  *   POST   /api/counterparty/check           pre-flight go/no-go before paying another agent
+ *   POST   /api/counterparty/compare         rank competing counterparties, pick a winner
  *   PATCH  /api/agents/:id/status             suspend / activate an agent
  *   DELETE /api/agents/:id                    delete an agent
  *   GET    /api/agents/:id/attestations       attestation history
@@ -104,6 +105,8 @@ router.get('/meta', (req, res) => {
     tier_progress_endpoint: '/api/agents/:id/tier',
     next_steps_endpoint: '/api/agents/:id/next-steps',
     counterparty_check_endpoint: '/api/counterparty/check',
+    counterparty_compare_endpoint: '/api/counterparty/compare',
+    counterparty_compare_max_candidates: agentService.MAX_COMPARE_CANDIDATES,
     rank_badge_endpoint: '/a/:handle/rank.svg',
     wallet_lookup_endpoint: '/api/wallets/:wallet',
     spend_preview_endpoint: '/api/permissions/:pid/spends/preview',
@@ -402,6 +405,67 @@ router.post(
       err.status = 404;
       throw err;
     }
+    res.json(result);
+  })
+);
+
+// Counterparty compare — pick between competing counterparties in one call.
+//
+// /counterparty/check answers "is this one safe?". An agent holding several
+// competing bids has the harder question: "which of these do I pay?" Answering
+// that today costs N round-trips plus client-side tie-break logic that every
+// caller reinvents differently. This runs the identical assessment per
+// candidate and returns them ranked by one explicit, documented rule, so two
+// different callers comparing the same agents always agree.
+//
+// `recommended` is the best candidate that actually clears (verdict=proceed),
+// or null when none do — deliberately not "the least-bad option".
+// Unresolvable handles land in `unresolved[]` instead of failing the batch.
+//
+// Public, read-only, no auth, nothing persisted, deterministic.
+router.post(
+  '/counterparty/compare',
+  wrap(async (req, res) => {
+    requireFields(req.body, ['counterparties']);
+    const { counterparties, amount = null } = req.body;
+
+    if (!Array.isArray(counterparties)) {
+      const err = new Error('counterparties must be an array');
+      err.status = 400;
+      throw err;
+    }
+    if (counterparties.length < 2) {
+      const err = new Error('counterparties must contain at least 2 entries to compare');
+      err.status = 400;
+      throw err;
+    }
+    if (counterparties.length > agentService.MAX_COMPARE_CANDIDATES) {
+      const err = new Error(
+        `counterparties accepts at most ${agentService.MAX_COMPARE_CANDIDATES} entries`
+      );
+      err.status = 400;
+      throw err;
+    }
+
+    if (amount != null) {
+      const n = Number(amount);
+      if (!Number.isFinite(n) || n <= 0) {
+        const err = new Error('amount, when provided, must be a positive number');
+        err.status = 400;
+        throw err;
+      }
+    }
+
+    const result = await agentService.compareCounterparties(counterparties, { amount });
+
+    // Every reference was unresolvable → the caller named nothing we know, which
+    // is a bad request shape rather than a successful empty comparison.
+    if (result.candidate_count === 0) {
+      const err = new Error('None of the supplied counterparties could be resolved');
+      err.status = 404;
+      throw err;
+    }
+
     res.json(result);
   })
 );

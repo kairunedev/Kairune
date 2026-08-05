@@ -195,6 +195,104 @@ interface WalletProfile {
     updated_at?: string;
     message?: string;
 }
+type CounterpartyCheckStatus = 'pass' | 'warn' | 'fail';
+type CounterpartyVerdict = 'proceed' | 'review' | 'decline';
+/** One named check that fed into the counterparty verdict. */
+interface CounterpartyCheck {
+    id: string;
+    label: string;
+    status: CounterpartyCheckStatus;
+    detail: string;
+}
+/**
+ * The result of a pre-flight counterparty check — the go/no-go an agent gets
+ * before paying another agent. `verdict` is the headline; `checks` explains it.
+ * An unregistered counterparty resolves to `registered: false` + a `decline`
+ * verdict rather than throwing.
+ */
+interface CounterpartyReport {
+    registered: boolean;
+    /** proceed = safe · review = caution / human-in-the-loop · decline = do not pay. */
+    verdict: CounterpartyVerdict;
+    /** The amount that was assessed, or null when none was supplied. */
+    requested_amount: number | null;
+    /** 0..100 independence of the counterparty's verified trust (anti-farming). */
+    trust_independence: number;
+    /** Recommended max exposure (USD) for a single transaction with this agent. */
+    suggested_max_amount: number;
+    /** Whether requested_amount fits the recommendation; null when no amount given. */
+    within_suggested_ceiling: boolean | null;
+    /** Codes of every check that did not pass, worst-first. */
+    reasons: string[];
+    /** Every check that ran, in evaluation order. */
+    checks: CounterpartyCheck[];
+    /** Present only when registered === true. */
+    counterparty?: {
+        agent_id: string;
+        handle: string;
+        wallet: string | null;
+        status: 'active' | 'suspended';
+        score: number;
+        tier: number;
+        tier_label: string;
+        max_score: number;
+    };
+    /** Raw signals behind the verdict; null when unregistered. */
+    signals?: {
+        tier: number;
+        trust_independence: number;
+        distinct_issuers: number;
+        verified_count: number;
+        unverified_count: number;
+        recent_severe_negatives: number;
+        recent_disputes: number;
+        negative_lookback_days: number;
+    } | null;
+    /** Present only when registered === false. */
+    wallet?: string | null;
+}
+/**
+ * One candidate inside a counterparty comparison — the same assessment
+ * `checkCounterparty` returns, flattened and given a `rank`.
+ */
+interface CounterpartyCandidate {
+    /** The reference as supplied by the caller (id, handle, or wallet). */
+    ref: string;
+    /** 1-based position in the ranking; 1 is the best pick. */
+    rank: number;
+    handle: string | null;
+    registered: boolean;
+    verdict: CounterpartyVerdict;
+    score: number;
+    tier: number;
+    tier_label: string | null;
+    trust_independence: number;
+    suggested_max_amount: number | null;
+    within_suggested_ceiling: boolean | null;
+    reasons: string[];
+    checks: CounterpartyCheck[];
+    signals: Record<string, number> | Record<string, never>;
+}
+/**
+ * The result of comparing several counterparties — "which of these do I pay?".
+ *
+ * `ranked` is ordered best-first by verdict, then score, then trust
+ * independence, then handle (so the order is deterministic across callers).
+ * `recommended` is the best candidate that actually clears; it is `null` when
+ * none reach `proceed`, rather than naming a least-bad option.
+ */
+interface CounterpartyComparison {
+    /** The amount assessed against every candidate, or null when none was given. */
+    requested_amount: number | null;
+    /** How many candidates produced a verdict (excludes `unresolved`). */
+    candidate_count: number;
+    /** Best candidate with verdict `proceed`, or null when none qualifies. */
+    recommended: CounterpartyCandidate | null;
+    /** All assessed candidates, best-first. */
+    ranked: CounterpartyCandidate[];
+    /** References that could not be resolved to an agent (e.g. a typo'd handle). */
+    unresolved: string[];
+}
 declare class KairuneError extends Error {
     status: number;
     body: unknown;
@@ -232,6 +330,44 @@ declare class Kairune {
      * An invalid (non-EVM) address still throws a KairuneError(400).
      */
     lookupWallet(wallet: string): Promise<WalletProfile>;
+    /**
+     * Pre-flight trust check before paying another agent.
+     *
+     * The one call for agent-to-agent commerce: name a counterparty (by id,
+     * handle, or `0x…` wallet) and optionally how much you mean to spend, and get
+     * a single `proceed` / `review` / `decline` verdict plus the checks behind it
+     * (status, tier, recent negatives, trust independence, exposure vs ceiling).
+     *
+     * A valid-but-unregistered wallet resolves to `{ registered: false, verdict:
+     * 'decline' }` instead of throwing, so "unknown counterparty" is a normal
+     * answer you can branch on. An unresolvable non-wallet reference throws
+     * KairuneError(404).
+     */
+    checkCounterparty(counterparty: string, opts?: {
+        amount?: number;
+    }): Promise<CounterpartyReport>;
+    /**
+     * Compare competing counterparties and pick one.
+     *
+     * `checkCounterparty` answers "is this one safe?". When you hold several bids
+     * for the same job, the real question is "which of these do I pay?" — this
+     * runs the identical assessment on every candidate in a single round-trip and
+     * returns them ranked by one documented rule (verdict, then score, then trust
+     * independence, then handle), so two callers comparing the same agents always
+     * agree on the winner.
+     *
+     * Read `recommended` for the answer. It is `null` when no candidate reaches
+     * `proceed` — deliberately not "the least-bad one" — so treat null as "reject
+     * this whole slate" and inspect `ranked` only if you want to override that
+     * knowingly.
+     *
+     * Requires 2..10 candidates. A typo'd handle lands in `unresolved` instead of
+     * failing the batch; a valid-but-unregistered `0x…` wallet is still ranked
+     * (as a `decline`). Throws KairuneError(404) only when nothing resolves.
+     */
+    compareCounterparties(counterparties: string[], opts?: {
+        amount?: number;
+    }): Promise<CounterpartyComparison>;
     /** Get attestation history for an agent. */
     getAttestations(agentId: string): Promise<Attestation[]>;
     /** Get permissions for an agent. */
@@ -334,4 +470,4 @@ declare class Kairune {
     }>;
 }
 
-export { type Agent, type Attestation, type Budget, type FeedEvent, Kairune, KairuneError, type KairuneOptions, type Meta, type Permission, type Spend, type SpendBlocked, type SpendPreview, type SpendPreviewReason, type SpendResult, type Stats, type WalletProfile, type Webhook, Kairune as default };
+export { type Agent, type Attestation, type Budget, type CounterpartyCandidate, type CounterpartyCheck, type CounterpartyCheckStatus, type CounterpartyComparison, type CounterpartyReport, type CounterpartyVerdict, type FeedEvent, Kairune, KairuneError, type KairuneOptions, type Meta, type Permission, type Spend, type SpendBlocked, type SpendPreview, type SpendPreviewReason, type SpendResult, type Stats, type WalletProfile, type Webhook, Kairune as default };
