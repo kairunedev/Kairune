@@ -217,11 +217,66 @@ async function usedInWindow(permissionId, period, nowMs) {
   return Number(res.rows[0].used) || 0;
 }
 
+// Counterparty verdicts that a gated spend refuses to pay. `review` is a soft
+// caution (emerging trust / large-for-tier amount), so it is allowed through;
+// only an outright `decline` — unregistered, suspended, or recently
+// chargeback/anomaly-flagged payee — blocks the charge.
+const GATE_BLOCKING_VERDICTS = Object.freeze(['decline']);
+
+/**
+ * Assess a payee before a spend is charged to it.
+ *
+ * This is the bridge between the two halves of Kairune: the counterparty trust
+ * check (who you're paying) and budget enforcement (how much you can spend).
+ * When a spend names a `counterparty`, we run the exact same assessment as
+ * `POST /api/counterparty/check` and refuse to release funds to a payee whose
+ * verdict is a `decline`. Budget alone never protected against paying a bad
+ * actor — this does.
+ *
+ * Returns `{ ok }` plus, when blocked, the machine-readable verdict/reasons so
+ * the caller (and the emitted event) can explain exactly why. An unresolvable
+ * non-wallet reference is itself a block: you asked to gate on a payee we can't
+ * identify, so the safe answer is no.
+ *
+ * @param {string|null} counterparty payee id, handle, or wallet address
+ * @param {{amount?:number|null, nowMs?:number}} [opts]
+ * @returns {Promise<{ok:boolean, assessment:object|null, verdict?:string, reasons?:string[]}>}
+ */
+async function assessSpendCounterparty(counterparty, { amount = null, nowMs } = {}) {
+  const ref = typeof counterparty === 'string' ? counterparty.trim() : '';
+  if (ref === '') return { ok: true, assessment: null };
+
+  const assessment = await agentService.checkCounterparty(ref, { amount, nowMs });
+
+  // A non-wallet reference we can't resolve → checkCounterparty returns null.
+  // Gating was requested on a payee we cannot identify, so refuse.
+  if (!assessment) {
+    return {
+      ok: false,
+      assessment: null,
+      verdict: 'decline',
+      reasons: ['counterparty_unresolved'],
+    };
+  }
+
+  if (GATE_BLOCKING_VERDICTS.includes(assessment.verdict)) {
+    return {
+      ok: false,
+      assessment,
+      verdict: assessment.verdict,
+      reasons: assessment.reasons || [],
+    };
+  }
+
+  return { ok: true, assessment };
+}
+
 /**
  * Authorize (and record) a spend against a permission.
  *
  * The charge is allowed only when the permission is active, its agent is
- * active, and the amount fits under the remaining budget for the current
+ * active, the payee (when a `counterparty` is named) passes its Kairune trust
+ * check, and the amount fits under the remaining budget for the current
  * rolling window. On success the spend is recorded and the updated budget is
  * returned. On rejection an Error with a `status` is thrown.
  *
@@ -233,13 +288,13 @@ async function usedInWindow(permissionId, period, nowMs) {
  * `idempotent_replay: true` so callers can tell a replay from a fresh charge.
  *
  * @param {string} permissionId
- * @param {{amount:number, note?:string, idempotencyKey?:string}} input
+ * @param {{amount:number, note?:string, idempotencyKey?:string, counterparty?:string}} input
  * @param {{nowMs?:number}} [opts]
  * @returns {Promise<object>}
  */
 async function authorizeSpend(
   permissionId,
-  { amount, note = null, idempotencyKey = null },
+  { amount, note = null, idempotencyKey = null, counterparty = null },
   opts = {}
 ) {
   const db = await getDb();
@@ -293,6 +348,51 @@ async function authorizeSpend(
     const err = new Error('Cannot spend for a suspended agent');
     err.status = 409;
     throw err;
+  }
+
+  // Counterparty gate: when the charge names a payee, refuse to release funds
+  // to one that fails its Kairune trust check. This is the point of the whole
+  // product — budget headroom never protected you from paying a bad actor.
+  // Checked BEFORE budget math so a payment to a declined payee is stopped even
+  // when the budget would allow it, and it emits its own distinct signal so an
+  // operator can tell "we blocked a bad payee" apart from "out of budget".
+  if (counterparty != null && String(counterparty).trim() !== '') {
+    const gate = await assessSpendCounterparty(counterparty, {
+      amount: value,
+      nowMs: opts.nowMs,
+    });
+    if (!gate.ok) {
+      const cp = gate.assessment && gate.assessment.counterparty;
+      const err = new Error(
+        `Counterparty failed trust check (verdict "${gate.verdict}") — payment refused`
+      );
+      err.status = 409;
+      err.details = {
+        counterparty: String(counterparty).trim(),
+        verdict: gate.verdict,
+        reasons: gate.reasons,
+        registered: gate.assessment ? gate.assessment.registered : false,
+      };
+      await emitSpendEvent('spend.counterparty_blocked', {
+        permission_id: permissionId,
+        agent_id: permission.agent_id,
+        requested: value,
+        counterparty: String(counterparty).trim(),
+        counterparty_handle: cp ? cp.handle : null,
+        verdict: gate.verdict,
+        reasons: gate.reasons,
+        reason: 'counterparty_declined',
+      });
+      await recordEvent('spend.blocked', {
+        agent_id: permission.agent_id,
+        agent_handle: agent.handle,
+        amount: value,
+        ceiling: Number(permission.ceiling),
+        period: permission.period,
+        reason: 'counterparty_declined',
+      });
+      throw err;
+    }
   }
 
   const ceiling = Number(permission.ceiling);
@@ -493,9 +593,10 @@ async function authorizeSpend(
  * Preview whether a spend would be authorized — WITHOUT charging.
  *
  * Runs the exact same checks as {@link authorizeSpend} (amount validity,
- * permission + agent active, budget headroom, idempotent replay) but never
- * writes a spend, touches the budget, or emits any event. Built for payment
- * rails and agents that want a go / no-go signal before committing a charge.
+ * permission + agent active, counterparty trust gate, budget headroom,
+ * idempotent replay) but never writes a spend, touches the budget, or emits
+ * any event. Built for payment rails and agents that want a go / no-go signal
+ * before committing a charge.
  *
  * Always resolves (never throws for a business rejection): the result carries
  * `allowed` plus a machine-readable `reason` when blocked, so a caller can
@@ -503,13 +604,13 @@ async function authorizeSpend(
  * 400, matching authorizeSpend's input contract.
  *
  * @param {string} permissionId
- * @param {{amount:number, idempotencyKey?:string}} input
+ * @param {{amount:number, idempotencyKey?:string, counterparty?:string}} input
  * @param {{nowMs?:number}} [opts]
- * @returns {Promise<{allowed:boolean, reason:string|null, requested:number, budget:object, idempotent_replay?:boolean, spend?:object}>}
+ * @returns {Promise<{allowed:boolean, reason:string|null, requested:number, budget:object, idempotent_replay?:boolean, spend?:object, counterparty?:object}>}
  */
 async function previewSpend(
   permissionId,
-  { amount, idempotencyKey = null },
+  { amount, idempotencyKey = null, counterparty = null },
   opts = {}
 ) {
   const db = await getDb();
@@ -580,6 +681,41 @@ async function previewSpend(
   }
   if (agent.status !== 'active') {
     return { allowed: false, reason: 'agent_suspended', requested: value, budget };
+  }
+
+  // Counterparty gate — same position and rule as authorizeSpend, so a preview
+  // of a payment to a declined payee is a no-go before we ever look at budget.
+  if (counterparty != null && String(counterparty).trim() !== '') {
+    const gate = await assessSpendCounterparty(counterparty, {
+      amount: value,
+      nowMs: opts.nowMs,
+    });
+    if (!gate.ok) {
+      return {
+        allowed: false,
+        reason: 'counterparty_declined',
+        requested: value,
+        budget,
+        counterparty: {
+          reference: String(counterparty).trim(),
+          verdict: gate.verdict,
+          reasons: gate.reasons,
+          registered: gate.assessment ? gate.assessment.registered : false,
+          assessment: gate.assessment,
+        },
+      };
+    }
+    // Passed the gate — surface the assessment so a caller sees the trust
+    // context behind the go signal, not just "allowed".
+    budget.counterparty = gate.assessment
+      ? {
+          reference: String(counterparty).trim(),
+          verdict: gate.assessment.verdict,
+          handle: gate.assessment.counterparty
+            ? gate.assessment.counterparty.handle
+            : null,
+        }
+      : null;
   }
 
   if (value > remaining) {
@@ -670,6 +806,7 @@ async function listFeed({ limit = 20 } = {}) {
 module.exports = {
   authorizeSpend,
   previewSpend,
+  assessSpendCounterparty,
   budgetSummary,
   listSpends,
   listFeed,
@@ -684,4 +821,5 @@ module.exports = {
   PERIOD_MS,
   MAX_IDEMPOTENCY_KEY_LEN,
   DEFAULT_VELOCITY_WINDOW_S,
+  GATE_BLOCKING_VERDICTS,
 };

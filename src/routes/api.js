@@ -107,6 +107,8 @@ router.get('/meta', (req, res) => {
     counterparty_check_endpoint: '/api/counterparty/check',
     counterparty_compare_endpoint: '/api/counterparty/compare',
     counterparty_compare_max_candidates: agentService.MAX_COMPARE_CANDIDATES,
+    spend_counterparty_gate: true,
+    spend_counterparty_blocking_verdicts: spendService.GATE_BLOCKING_VERDICTS,
     rank_badge_endpoint: '/a/:handle/rank.svg',
     wallet_lookup_endpoint: '/api/wallets/:wallet',
     spend_preview_endpoint: '/api/permissions/:pid/spends/preview',
@@ -847,14 +849,18 @@ router.post(
     const result = await spendService.previewSpend(req.params.pid, {
       amount: req.body.amount,
       idempotencyKey,
+      counterparty: req.body.counterparty,
     });
     res.json(result);
   })
 );
 
-// Authorize a real charge. Enforces the period ceiling (409 when exceeded) and,
-// when the permission has one, a burst velocity cap (429 + a spend.velocity
-// webhook). Both rejections carry a `details` object describing the headroom.
+// Authorize a real charge. Enforces the period ceiling (409 when exceeded),
+// an optional burst velocity cap (429 + a spend.velocity webhook), and — when
+// the body names a `counterparty` (payee id/handle/wallet) — a Kairune trust
+// gate that refuses (409 + a spend.counterparty_blocked webhook) to release
+// funds to a payee whose trust check verdict is `decline`. Every rejection
+// carries a `details` object describing exactly why.
 router.post(
   '/permissions/:pid/spends',
   wrap(async (req, res) => {
@@ -867,6 +873,7 @@ router.post(
       amount: req.body.amount,
       note: req.body.note,
       idempotencyKey,
+      counterparty: req.body.counterparty,
     });
     // A replay returns the original spend (200), a fresh charge is created (201).
     res.status(result.idempotent_replay ? 200 : 201).json(result);

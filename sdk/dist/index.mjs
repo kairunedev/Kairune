@@ -196,6 +196,11 @@ var Kairune = class {
    * the same key returns the original spend without charging the budget again
    * (the result carries `idempotent_replay: true`). Strongly recommended for
    * any agent that retries on network failures.
+   *
+   * Pass `counterparty` (the payee's id, handle, or wallet) to gate the charge
+   * on Kairune's trust check: a payment to a payee whose verdict is `decline`
+   * (unregistered, suspended, or recently charged-back) is refused before any
+   * budget is touched, resolving as `approved: false` with `verdict: 'decline'`.
    */
   async spend(permissionId, input) {
     const { idempotencyKey, ...body } = input;

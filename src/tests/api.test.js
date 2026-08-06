@@ -115,6 +115,10 @@ test('GET /api/meta returns kinds and tiers', async () => {
   assert.strictEqual(r.status, 200);
   assert.ok(Array.isArray(r.body.attestation_kinds));
   assert.ok(r.body.attestation_kinds.includes('task_completed'));
+  // Counterparty-gated spending is advertised so callers can discover it.
+  assert.strictEqual(r.body.spend_counterparty_gate, true);
+  assert.ok(r.body.spend_counterparty_blocking_verdicts.includes('decline'));
+  assert.ok(r.body.webhook_events.includes('spend.counterparty_blocked'));
 });
 
 test('full lifecycle: create → attest → score up → permission → revoke', async () => {
@@ -212,6 +216,66 @@ test('spend idempotency: Idempotency-Key header prevents a double-charge', async
   assert.strictEqual(other.body.budget.used, 50);
 
   await req('DELETE', '/api/agents/' + id);
+});
+
+test('counterparty gate: a spend to a declined payee is blocked (409) with budget intact', async () => {
+  const ctx = await setupIssuer('gate-issuer');
+
+  // Payer: raise its tier so it can hold a spending permission.
+  const payer = await req('POST', '/api/agents', {
+    handle: 'gate-payer',
+    wallet: '0x9a7e000000000000000000000000000000000001',
+    operator: 'CI',
+  });
+  const payerId = payer.body.agent.id;
+  for (let i = 0; i < 15; i++) await signedAttest(payerId, 'task_completed', ctx);
+  await signedAttest(payerId, 'peer_vouch', ctx);
+
+  const grant = await req('POST', '/api/agents/' + payerId + '/permissions', {
+    category: 'compute',
+    ceiling: 100,
+  });
+  const pid = grant.body.permission.id;
+
+  // Payee: register, then stamp it with a chargeback so its check verdict is
+  // `decline`.
+  const payee = await req('POST', '/api/agents', {
+    handle: 'gate-payee',
+    wallet: '0x9a7e000000000000000000000000000000000002',
+    operator: 'CI',
+  });
+  const payeeId = payee.body.agent.id;
+  await req('POST', '/api/agents/' + payeeId + '/attestations', { kind: 'chargeback' });
+
+  // Preview says no-go for the bad payee.
+  const preview = await req('POST', '/api/permissions/' + pid + '/spends/preview', {
+    amount: 10,
+    counterparty: 'gate-payee',
+  });
+  assert.strictEqual(preview.status, 200);
+  assert.strictEqual(preview.body.allowed, false);
+  assert.strictEqual(preview.body.reason, 'counterparty_declined');
+
+  // A real charge is refused with 409 and the decline details.
+  const blocked = await req('POST', '/api/permissions/' + pid + '/spends', {
+    amount: 10,
+    counterparty: 'gate-payee',
+  });
+  assert.strictEqual(blocked.status, 409);
+  assert.strictEqual(blocked.body.details.verdict, 'decline');
+
+  // Budget was never touched.
+  const budget = await req('GET', '/api/permissions/' + pid + '/budget');
+  assert.strictEqual(budget.body.budget.used, 0);
+
+  // The same spend WITHOUT a counterparty still goes through — the gate only
+  // engages when a payee is named.
+  const ok = await req('POST', '/api/permissions/' + pid + '/spends', { amount: 10 });
+  assert.strictEqual(ok.status, 201);
+  assert.strictEqual(ok.body.budget.used, 10);
+
+  await req('DELETE', '/api/agents/' + payerId);
+  await req('DELETE', '/api/agents/' + payeeId);
 });
 
 test('validation: missing fields → 400', async () => {

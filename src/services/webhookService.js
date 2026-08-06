@@ -22,6 +22,8 @@ function nowIso() {
 // Event names the platform can emit. '*' subscribes to all of them.
 //   spend.approved     — a spend was authorized within its ceiling
 //   spend.blocked      — a spend was denied (ceiling exceeded / no budget)
+//   spend.counterparty_blocked — a spend was denied because the payee failed
+//                        its Kairune trust check (declined/unregistered payee)
 //   spend.threshold    — an approved spend pushed budget past the alert line
 //   spend.velocity     — a spend was denied by the burst (velocity) limit
 //   agent.tier_changed — an agent's trust tier moved up or down after a rescore
@@ -30,6 +32,7 @@ function nowIso() {
 const EVENTS = Object.freeze([
   'spend.approved',
   'spend.blocked',
+  'spend.counterparty_blocked',
   'spend.threshold',
   'spend.velocity',
   'agent.tier_changed',

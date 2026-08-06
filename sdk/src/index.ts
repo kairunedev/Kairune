@@ -118,6 +118,11 @@ export interface SpendBlocked {
     velocity_window_s?: number
     velocity_used?: number
     velocity_remaining?: number
+    // counterparty block
+    counterparty?: string
+    verdict?: 'decline' | 'review' | 'proceed'
+    reasons?: string[]
+    registered?: boolean
   }
 }
 
@@ -128,6 +133,7 @@ export type SpendPreviewReason =
   | 'permission_revoked'
   | 'agent_suspended'
   | 'agent_not_found'
+  | 'counterparty_declined'
 
 export interface SpendPreview {
   /** Whether a real charge with these inputs would be authorized right now. */
@@ -572,10 +578,15 @@ export class Kairune {
    * the same key returns the original spend without charging the budget again
    * (the result carries `idempotent_replay: true`). Strongly recommended for
    * any agent that retries on network failures.
+   *
+   * Pass `counterparty` (the payee's id, handle, or wallet) to gate the charge
+   * on Kairune's trust check: a payment to a payee whose verdict is `decline`
+   * (unregistered, suspended, or recently charged-back) is refused before any
+   * budget is touched, resolving as `approved: false` with `verdict: 'decline'`.
    */
   async spend(
     permissionId: string,
-    input: { amount: number; note?: string; idempotencyKey?: string }
+    input: { amount: number; note?: string; idempotencyKey?: string; counterparty?: string }
   ): Promise<SpendResult | SpendBlocked> {
     const { idempotencyKey, ...body } = input
     const headers = idempotencyKey ? { 'idempotency-key': idempotencyKey } : undefined
@@ -618,7 +629,7 @@ export class Kairune {
    */
   async previewSpend(
     permissionId: string,
-    input: { amount: number; idempotencyKey?: string }
+    input: { amount: number; idempotencyKey?: string; counterparty?: string }
   ): Promise<SpendPreview> {
     const { idempotencyKey, ...body } = input
     const headers = idempotencyKey ? { 'idempotency-key': idempotencyKey } : undefined
