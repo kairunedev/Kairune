@@ -109,6 +109,10 @@ router.get('/meta', (req, res) => {
     counterparty_compare_max_candidates: agentService.MAX_COMPARE_CANDIDATES,
     spend_counterparty_gate: true,
     spend_counterparty_blocking_verdicts: spendService.GATE_BLOCKING_VERDICTS,
+    counterparty_policies: permissionService.COUNTERPARTY_POLICIES,
+    payees_endpoint: '/api/permissions/:pid/payees',
+    counterparty_policy_endpoint: '/api/permissions/:pid/counterparty-policy',
+    max_payees_per_permission: permissionService.MAX_PAYEES_PER_PERMISSION,
     rank_badge_endpoint: '/a/:handle/rank.svg',
     wallet_lookup_endpoint: '/api/wallets/:wallet',
     spend_preview_endpoint: '/api/permissions/:pid/spends/preview',
@@ -785,6 +789,8 @@ router.post(
       granted_by: req.body.granted_by,
       velocity_limit: req.body.velocity_limit,
       velocity_window_s: req.body.velocity_window_s,
+      counterparty_policy: req.body.counterparty_policy,
+      payees: req.body.payees,
     });
     res.status(201).json({ permission });
   })
@@ -800,6 +806,73 @@ router.post(
       err.status = 404;
       throw err;
     }
+    res.json({ permission });
+  })
+);
+
+// ---------------------------------------------------------------------------
+// Payee scope — WHO a permission is allowed to pay.
+//
+// A ceiling caps how much; this caps who. Setting a permission's
+// counterparty_policy to `required` or `allowlist` makes the counterparty trust
+// gate mandatory instead of opt-in, so a caller can no longer skip it by
+// omitting the field. The allowlist itself says "in scope", never "trusted" —
+// an allowlisted payee that starts collecting chargebacks is still refused.
+// ---------------------------------------------------------------------------
+router.get(
+  '/permissions/:pid/payees',
+  wrap(async (req, res) => {
+    const budget = await spendService.budgetSummary(req.params.pid);
+    if (!budget) {
+      const err = new Error('Permission not found');
+      err.status = 404;
+      throw err;
+    }
+    res.json({
+      counterparty_policy: budget.counterparty_policy,
+      payees: await permissionService.listPayees(req.params.pid),
+    });
+  })
+);
+
+router.post(
+  '/permissions/:pid/payees',
+  wrap(async (req, res) => {
+    requireAdmin(req);
+    requireFields(req.body, ['counterparty']);
+    const payee = await permissionService.addPayee(req.params.pid, req.body.counterparty, {
+      label: req.body.label,
+    });
+    res.status(201).json({ payee });
+  })
+);
+
+router.delete(
+  '/permissions/:pid/payees/:ref',
+  wrap(async (req, res) => {
+    requireAdmin(req);
+    const removed = await permissionService.removePayee(req.params.pid, req.params.ref);
+    if (!removed) {
+      const err = new Error('Payee not found on this allowlist');
+      err.status = 404;
+      throw err;
+    }
+    res.json({ removed });
+  })
+);
+
+// Tighten (or loosen) an existing grant's payee scope without revoking it, so
+// the permission id and its spend history survive the change.
+router.post(
+  '/permissions/:pid/counterparty-policy',
+  wrap(async (req, res) => {
+    requireAdmin(req);
+    requireFields(req.body, ['counterparty_policy']);
+    const permission = await permissionService.setCounterpartyPolicy(
+      req.params.pid,
+      req.body.counterparty_policy,
+      { payees: req.body.payees }
+    );
     res.json({ permission });
   })
 );

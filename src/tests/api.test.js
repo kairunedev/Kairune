@@ -119,6 +119,10 @@ test('GET /api/meta returns kinds and tiers', async () => {
   assert.strictEqual(r.body.spend_counterparty_gate, true);
   assert.ok(r.body.spend_counterparty_blocking_verdicts.includes('decline'));
   assert.ok(r.body.webhook_events.includes('spend.counterparty_blocked'));
+  // Payee scope: the policies + management endpoints are discoverable.
+  assert.deepStrictEqual(r.body.counterparty_policies, ['open', 'required', 'allowlist']);
+  assert.strictEqual(r.body.payees_endpoint, '/api/permissions/:pid/payees');
+  assert.ok(r.body.max_payees_per_permission > 0);
 });
 
 test('full lifecycle: create → attest → score up → permission → revoke', async () => {
@@ -276,6 +280,150 @@ test('counterparty gate: a spend to a declined payee is blocked (409) with budge
 
   await req('DELETE', '/api/agents/' + payerId);
   await req('DELETE', '/api/agents/' + payeeId);
+});
+
+test('payee scope: an allowlist grant only pays its allowlisted vendors', async () => {
+  const ctx = await setupIssuer('scope-issuer');
+
+  // Payer, raised to a tier that can hold a permission.
+  const payer = await req('POST', '/api/agents', {
+    handle: 'scope-payer',
+    wallet: '0x5c0e000000000000000000000000000000000001',
+    operator: 'CI',
+  });
+  const payerId = payer.body.agent.id;
+  for (let i = 0; i < 15; i++) await signedAttest(payerId, 'task_completed', ctx);
+  await signedAttest(payerId, 'peer_vouch', ctx);
+
+  // Two registered payees with clean, verified history — both would pass the
+  // trust gate. Only one is in scope for this budget.
+  const vendorIds = {};
+  for (const h of ['scope-vendor', 'scope-stranger']) {
+    const a = await req('POST', '/api/agents', {
+      handle: h,
+      wallet:
+        h === 'scope-vendor'
+          ? '0x5c0e000000000000000000000000000000000002'
+          : '0x5c0e000000000000000000000000000000000003',
+      operator: 'CI',
+    });
+    vendorIds[h] = a.body.agent.id;
+    for (let i = 0; i < 12; i++) await signedAttest(vendorIds[h], 'task_completed', ctx);
+  }
+
+  // Grant a permission scoped to exactly one vendor.
+  const grant = await req('POST', '/api/agents/' + payerId + '/permissions', {
+    category: 'compute',
+    ceiling: 100,
+    counterparty_policy: 'allowlist',
+    payees: ['scope-vendor'],
+  });
+  assert.strictEqual(grant.status, 201);
+  assert.strictEqual(grant.body.permission.counterparty_policy, 'allowlist');
+  assert.strictEqual(grant.body.permission.payees.length, 1);
+  const pid = grant.body.permission.id;
+
+  // The allowlisted vendor gets paid.
+  const paid = await req('POST', '/api/permissions/' + pid + '/spends', {
+    amount: 10,
+    counterparty: 'scope-vendor',
+  });
+  assert.strictEqual(paid.status, 201);
+
+  // A perfectly trustworthy but OUT-OF-SCOPE payee is refused.
+  const off = await req('POST', '/api/permissions/' + pid + '/spends', {
+    amount: 10,
+    counterparty: 'scope-stranger',
+  });
+  assert.strictEqual(off.status, 409);
+  assert.strictEqual(off.body.details.reason, 'counterparty_not_allowed');
+
+  // And the omission bypass is closed: no payee named → refused.
+  const bare = await req('POST', '/api/permissions/' + pid + '/spends', { amount: 10 });
+  assert.strictEqual(bare.status, 409);
+  assert.strictEqual(bare.body.details.reason, 'counterparty_required');
+
+  // Only the one legitimate charge landed.
+  const budget = await req('GET', '/api/permissions/' + pid + '/budget');
+  assert.strictEqual(budget.body.budget.used, 10);
+  assert.strictEqual(budget.body.budget.counterparty_policy, 'allowlist');
+
+  // Allowlist is inspectable, and adding the stranger lets it through.
+  const list = await req('GET', '/api/permissions/' + pid + '/payees');
+  assert.strictEqual(list.status, 200);
+  assert.strictEqual(list.body.payees.length, 1);
+
+  const added = await req('POST', '/api/permissions/' + pid + '/payees', {
+    counterparty: 'scope-stranger',
+    label: 'backup vendor',
+  });
+  assert.strictEqual(added.status, 201);
+  const nowOk = await req('POST', '/api/permissions/' + pid + '/spends', {
+    amount: 10,
+    counterparty: 'scope-stranger',
+  });
+  assert.strictEqual(nowOk.status, 201);
+
+  // Removing it revokes access immediately.
+  const removed = await req('DELETE', '/api/permissions/' + pid + '/payees/scope-stranger');
+  assert.strictEqual(removed.status, 200);
+  const blockedAgain = await req('POST', '/api/permissions/' + pid + '/spends', {
+    amount: 10,
+    counterparty: 'scope-stranger',
+  });
+  assert.strictEqual(blockedAgain.status, 409);
+
+  await req('DELETE', '/api/agents/' + payerId);
+  await req('DELETE', '/api/agents/' + vendorIds['scope-vendor']);
+  await req('DELETE', '/api/agents/' + vendorIds['scope-stranger']);
+});
+
+test('payee scope: an open grant can be tightened without losing its history', async () => {
+  const ctx = await setupIssuer('tighten-issuer');
+  const payer = await req('POST', '/api/agents', {
+    handle: 'tighten-payer',
+    wallet: '0x71e0000000000000000000000000000000000001',
+    operator: 'CI',
+  });
+  const payerId = payer.body.agent.id;
+  for (let i = 0; i < 15; i++) await signedAttest(payerId, 'task_completed', ctx);
+  await signedAttest(payerId, 'peer_vouch', ctx);
+
+  const vendor = await req('POST', '/api/agents', {
+    handle: 'tighten-vendor',
+    wallet: '0x71e0000000000000000000000000000000000002',
+    operator: 'CI',
+  });
+  const vendorId = vendor.body.agent.id;
+  for (let i = 0; i < 12; i++) await signedAttest(vendorId, 'task_completed', ctx);
+
+  // Legacy-style grant: no policy → 'open', unnamed spends allowed.
+  const grant = await req('POST', '/api/agents/' + payerId + '/permissions', {
+    category: 'compute',
+    ceiling: 100,
+  });
+  const pid = grant.body.permission.id;
+  assert.strictEqual(grant.body.permission.counterparty_policy, 'open');
+  const spent = await req('POST', '/api/permissions/' + pid + '/spends', { amount: 20 });
+  assert.strictEqual(spent.status, 201);
+
+  // Tighten in place.
+  const tightened = await req('POST', '/api/permissions/' + pid + '/counterparty-policy', {
+    counterparty_policy: 'allowlist',
+    payees: ['tighten-vendor'],
+  });
+  assert.strictEqual(tightened.status, 200);
+  assert.strictEqual(tightened.body.permission.id, pid);
+  assert.strictEqual(tightened.body.permission.counterparty_policy, 'allowlist');
+
+  // Unnamed spends now refused; the earlier spend still counts against budget.
+  const bare = await req('POST', '/api/permissions/' + pid + '/spends', { amount: 5 });
+  assert.strictEqual(bare.status, 409);
+  const budget = await req('GET', '/api/permissions/' + pid + '/budget');
+  assert.strictEqual(budget.body.budget.used, 20);
+
+  await req('DELETE', '/api/agents/' + payerId);
+  await req('DELETE', '/api/agents/' + vendorId);
 });
 
 test('validation: missing fields → 400', async () => {

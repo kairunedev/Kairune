@@ -125,6 +125,14 @@ async function ensurePermissionColumns(c) {
   const additions = [
     ['velocity_limit', 'ALTER TABLE permissions ADD COLUMN velocity_limit REAL'],
     ['velocity_window_s', 'ALTER TABLE permissions ADD COLUMN velocity_window_s INTEGER'],
+    // Payee scope: 'open' (legacy behaviour — counterparty optional),
+    // 'required' (every spend must name a payee), 'allowlist' (must name a
+    // payee that is pinned in permission_payees). Defaults to 'open' so
+    // permissions granted before this feature keep working unchanged.
+    [
+      'counterparty_policy',
+      `ALTER TABLE permissions ADD COLUMN counterparty_policy TEXT NOT NULL DEFAULT 'open'`,
+    ],
   ];
   for (const [col, sql] of additions) {
     if (!existing.has(col)) {

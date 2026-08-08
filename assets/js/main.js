@@ -440,6 +440,165 @@ if (caCopy && caValue) {
   });
 }
 
+// two-gate pipeline: walks a spend request through scope → trust → settle.
+// Scope is deliberately shown first: an out-of-scope payee never reaches the trust gate.
+(function gatePipeline() {
+  const rig = document.getElementById('gateRig');
+  if (!rig) return;
+
+  const SCENARIOS = [
+    {
+      label: 'allowlisted vendor',
+      amount: '$42.00',
+      payee: '→ gpu-vendor',
+      scope: 'pass',
+      trust: 'pass',
+      verdict: 'ok',
+      text: '200 · settled — payee on allowlist, tier_3 ceiling has room',
+    },
+    {
+      label: 'stranger payee',
+      amount: '$8.00',
+      payee: '→ 0x9f31…c40a',
+      scope: 'fail',
+      trust: 'skip',
+      verdict: 'no',
+      text: '409 · counterparty_not_allowed — not on this grant\u2019s allowlist, refused before any trust lookup',
+    },
+    {
+      label: 'no payee named',
+      amount: '$15.00',
+      payee: '→ (omitted)',
+      scope: 'fail',
+      trust: 'skip',
+      verdict: 'no',
+      text: '409 · counterparty_required — this grant will not pay an unnamed party',
+    },
+    {
+      label: 'allowlisted but declined',
+      amount: '$90.00',
+      payee: '→ flaky-vendor',
+      scope: 'pass',
+      trust: 'fail',
+      verdict: 'no',
+      text: '409 · counterparty_declined — on the list, but its own record says no. Scope is not a free pass.',
+    },
+  ];
+
+  const els = {
+    amount: document.getElementById('gateAmount'),
+    payee: document.getElementById('gatePayee'),
+    verdict: document.getElementById('gateVerdict'),
+    verdictText: document.getElementById('gateVerdictText'),
+    chips: document.getElementById('gateScenarios'),
+  };
+  const scope = rig.querySelector('[data-gate="scope"]');
+  const trust = rig.querySelector('[data-gate="trust"]');
+  const settle = rig.querySelector('[data-gate="settle"]');
+  const wires = [1, 2, 3].map(n => rig.querySelector(`[data-leg="${n}"]`));
+  if (!els.amount || !scope || !trust || !settle || wires.some(w => !w)) return;
+
+  let timers = [];
+  let index = 0;
+  let auto = true;
+
+  const clearTimers = () => { timers.forEach(clearTimeout); timers = []; };
+  const after = (ms, fn) => { timers.push(setTimeout(fn, ms)); };
+
+  function resetVisuals() {
+    [scope, trust, settle].forEach(n => n.classList.remove('pass', 'fail', 'idle'));
+    wires.forEach(w => w.classList.remove('flow', 'live', 'dead'));
+    els.verdict.classList.remove('ok', 'no');
+  }
+
+  function paintChips() {
+    Array.from(els.chips.children).forEach((c, i) => c.classList.toggle('on', i === index));
+  }
+
+  function run(s) {
+    clearTimers();
+    resetVisuals();
+    // force the packet animations to restart from zero
+    void rig.offsetWidth;
+
+    els.amount.textContent = s.amount;
+    els.payee.textContent = s.payee;
+    els.verdictText.textContent = 'evaluating…';
+    paintChips();
+
+    const step = reduced ? 0 : 620;
+
+    wires[0].classList.add('flow', 'live');
+    after(step, () => {
+      scope.classList.add(s.scope);
+      if (s.scope === 'fail') {
+        wires[1].classList.add('dead');
+        wires[2].classList.add('dead');
+        trust.classList.add('idle');
+        settle.classList.add('idle');
+        els.verdict.classList.add(s.verdict);
+        els.verdictText.textContent = s.text;
+        return;
+      }
+      wires[1].classList.add('flow', 'live');
+      after(step, () => {
+        trust.classList.add(s.trust);
+        if (s.trust === 'fail') {
+          wires[2].classList.add('dead');
+          settle.classList.add('idle');
+          els.verdict.classList.add(s.verdict);
+          els.verdictText.textContent = s.text;
+          return;
+        }
+        wires[2].classList.add('flow', 'live');
+        after(step, () => {
+          settle.classList.add('pass');
+          els.verdict.classList.add(s.verdict);
+          els.verdictText.textContent = s.text;
+        });
+      });
+    });
+  }
+
+  SCENARIOS.forEach((s, i) => {
+    const chip = document.createElement('button');
+    chip.type = 'button';
+    chip.className = 'gate-chip';
+    chip.textContent = s.label;
+    chip.addEventListener('click', () => {
+      auto = false;
+      index = i;
+      run(SCENARIOS[index]);
+    });
+    els.chips.appendChild(chip);
+  });
+
+  run(SCENARIOS[index]);
+
+  // Advance on its own until the visitor takes over, and only while on screen.
+  const CYCLE = 4200;
+  let cycler = null;
+  const tick = () => {
+    if (!auto) return;
+    index = (index + 1) % SCENARIOS.length;
+    run(SCENARIOS[index]);
+  };
+  const start = () => { if (!cycler) cycler = setInterval(tick, CYCLE); };
+  const stop = () => { clearInterval(cycler); cycler = null; };
+
+  if ('IntersectionObserver' in window) {
+    new IntersectionObserver((entries) => {
+      entries.forEach(e => (e.isIntersecting ? start() : stop()));
+    }, { threshold: 0.25 }).observe(rig);
+  } else {
+    start();
+  }
+  document.addEventListener('visibilitychange', () => {
+    if (document.hidden) stop(); else start();
+  });
+  rig.addEventListener('pointerenter', () => { auto = false; });
+})();
+
 // live registry stats (social proof → console)
 (async function loadLiveStats() {
   const els = {

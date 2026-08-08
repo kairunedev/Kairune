@@ -43,6 +43,34 @@ interface Agent {
     updated_at: string;
     breakdown?: Record<string, number>;
 }
+/**
+ * Payee scope for a permission — WHO the budget may pay.
+ *
+ * - `open`      naming a payee is optional (legacy; the trust gate only runs
+ *               when a `counterparty` is supplied)
+ * - `required`  every spend must name a payee, so the trust gate always runs
+ * - `allowlist` every spend must name a payee pinned to the permission
+ *
+ * `allowlist` implies `required`. Neither replaces the trust gate: an
+ * allowlisted payee that starts failing its trust check is still refused.
+ */
+type CounterpartyPolicy = 'open' | 'required' | 'allowlist';
+/** One payee pinned to a permission's allowlist. */
+interface PermissionPayee {
+    id: string;
+    permission_id: string;
+    /** Resolved payee agent, or `null` for a valid-but-unregistered wallet. */
+    agent_id: string | null;
+    /** The reference as stored (handle, agent id, or lowercased wallet). */
+    reference: string;
+    /** Optional operator note, e.g. "primary GPU vendor". */
+    label?: string | null;
+    /** Current handle of the resolved payee, when it is registered. */
+    handle?: string | null;
+    /** Whether the reference resolved to a registered Kairune agent. */
+    registered?: boolean;
+    created_at: string;
+}
 interface Permission {
     id: string;
     agent_id: string;
@@ -54,6 +82,10 @@ interface Permission {
     velocity_limit?: number | null;
     /** Rolling window (seconds) for the velocity limit. `null` when no limit is set. */
     velocity_window_s?: number | null;
+    /** Payee scope. Defaults to `open` for grants made before the feature existed. */
+    counterparty_policy?: CounterpartyPolicy;
+    /** Allowlisted payees, returned when a grant seeds or updates them. */
+    payees?: PermissionPayee[];
     granted_by: string | null;
     created_at: string;
 }
@@ -70,6 +102,8 @@ interface Budget {
     velocity_limit?: number | null;
     /** Rolling window (seconds) for the velocity limit, or `null` when none is set. */
     velocity_window_s?: number | null;
+    /** Payee scope enforced on every spend against this permission. */
+    counterparty_policy?: CounterpartyPolicy;
 }
 interface Spend {
     id: string;
@@ -105,14 +139,20 @@ interface SpendBlocked {
         velocity_window_s?: number;
         velocity_used?: number;
         velocity_remaining?: number;
-        counterparty?: string;
+        counterparty?: string | null;
         verdict?: 'decline' | 'review' | 'proceed';
         reasons?: string[];
         registered?: boolean;
+        counterparty_policy?: CounterpartyPolicy;
+        reason?: SpendPreviewReason;
     };
 }
 /** Why a previewed spend would be blocked. `null` when it would be allowed. */
-type SpendPreviewReason = 'ceiling_exceeded' | 'velocity_exceeded' | 'permission_revoked' | 'agent_suspended' | 'agent_not_found' | 'counterparty_declined';
+type SpendPreviewReason = 'ceiling_exceeded' | 'velocity_exceeded' | 'permission_revoked' | 'agent_suspended' | 'agent_not_found' | 'counterparty_declined'
+/** The permission's policy requires a payee, and none was named. */
+ | 'counterparty_required'
+/** The named payee is not on this permission's allowlist. */
+ | 'counterparty_not_allowed';
 interface SpendPreview {
     /** Whether a real charge with these inputs would be authorized right now. */
     allowed: boolean;
@@ -404,6 +444,12 @@ declare class Kairune {
      * most that amount may be spent within `velocity_window_s` seconds (default
      * 60). A spend that trips it is denied and fires a `spend.velocity` webhook,
      * catching a runaway or compromised agent before it drains the whole budget.
+     *
+     * Pass `counterparty_policy` to scope WHO the budget may pay. `required`
+     * makes naming a payee mandatory (so the trust gate can never be skipped by
+     * omitting it); `allowlist` additionally restricts spends to the `payees` you
+     * pin here — "this budget may only ever pay these vendors". An `allowlist`
+     * grant requires a non-empty `payees` array.
      */
     grantPermission(agentId: string, input: {
         category: string;
@@ -411,6 +457,9 @@ declare class Kairune {
         period?: string;
         velocity_limit?: number;
         velocity_window_s?: number;
+        counterparty_policy?: CounterpartyPolicy;
+        /** Payee references (id / handle / wallet). Required for `allowlist`. */
+        payees?: string[];
     }): Promise<{
         permission: Permission;
         capped: boolean;
@@ -418,6 +467,41 @@ declare class Kairune {
     /** Revoke a permission. */
     revokePermission(permissionId: string): Promise<{
         revoked: boolean;
+    }>;
+    /** List the payees allowlisted on a permission, plus its current policy. */
+    listPayees(permissionId: string): Promise<{
+        counterparty_policy: CounterpartyPolicy;
+        payees: PermissionPayee[];
+    }>;
+    /**
+     * Pin a payee to a permission's allowlist.
+     *
+     * The reference is resolved to a Kairune agent when possible, so an entry
+     * added by handle still matches a spend that names the same payee by wallet.
+     * A valid-but-unregistered wallet is accepted — the allowlist declares scope,
+     * not trust, so it is still refused by the trust gate until it registers.
+     */
+    addPayee(permissionId: string, counterparty: string, input?: {
+        label?: string;
+    }): Promise<{
+        payee: PermissionPayee;
+    }>;
+    /** Remove a payee from a permission's allowlist (by row id or reference). */
+    removePayee(permissionId: string, reference: string): Promise<{
+        removed: PermissionPayee;
+    }>;
+    /**
+     * Change a permission's payee scope in place.
+     *
+     * Lets you TIGHTEN an existing grant (e.g. `open` → `allowlist`) without
+     * revoking and re-granting, so the permission id and its spend history
+     * survive. Switching to `allowlist` requires at least one payee — supply them
+     * via `payees` if the allowlist is still empty.
+     */
+    setCounterpartyPolicy(permissionId: string, counterparty_policy: CounterpartyPolicy, input?: {
+        payees?: string[];
+    }): Promise<{
+        permission: Permission;
     }>;
     /**
      * Authorize a spend against a permission. Enforces the ceiling — and the
@@ -435,6 +519,11 @@ declare class Kairune {
      * on Kairune's trust check: a payment to a payee whose verdict is `decline`
      * (unregistered, suspended, or recently charged-back) is refused before any
      * budget is touched, resolving as `approved: false` with `verdict: 'decline'`.
+     *
+     * When the permission's `counterparty_policy` is `required` or `allowlist`,
+     * `counterparty` is mandatory: omitting it is refused with
+     * `counterparty_required`, and naming a payee outside an allowlist is refused
+     * with `counterparty_not_allowed` — both before any budget is touched.
      */
     spend(permissionId: string, input: {
         amount: number;
@@ -485,4 +574,4 @@ declare class Kairune {
     }>;
 }
 
-export { type Agent, type Attestation, type Budget, type CounterpartyCandidate, type CounterpartyCheck, type CounterpartyCheckStatus, type CounterpartyComparison, type CounterpartyReport, type CounterpartyVerdict, type FeedEvent, Kairune, KairuneError, type KairuneOptions, type Meta, type Permission, type Spend, type SpendBlocked, type SpendPreview, type SpendPreviewReason, type SpendResult, type Stats, type WalletProfile, type Webhook, Kairune as default };
+export { type Agent, type Attestation, type Budget, type CounterpartyCandidate, type CounterpartyCheck, type CounterpartyCheckStatus, type CounterpartyComparison, type CounterpartyPolicy, type CounterpartyReport, type CounterpartyVerdict, type FeedEvent, Kairune, KairuneError, type KairuneOptions, type Meta, type Permission, type PermissionPayee, type Spend, type SpendBlocked, type SpendPreview, type SpendPreviewReason, type SpendResult, type Stats, type WalletProfile, type Webhook, Kairune as default };

@@ -203,6 +203,12 @@ var Kairune = class {
    * most that amount may be spent within `velocity_window_s` seconds (default
    * 60). A spend that trips it is denied and fires a `spend.velocity` webhook,
    * catching a runaway or compromised agent before it drains the whole budget.
+   *
+   * Pass `counterparty_policy` to scope WHO the budget may pay. `required`
+   * makes naming a payee mandatory (so the trust gate can never be skipped by
+   * omitting it); `allowlist` additionally restricts spends to the `payees` you
+   * pin here — "this budget may only ever pay these vendors". An `allowlist`
+   * grant requires a non-empty `payees` array.
    */
   async grantPermission(agentId, input) {
     return this.request("POST", `/agents/${agentId}/permissions`, input);
@@ -210,6 +216,45 @@ var Kairune = class {
   /** Revoke a permission. */
   async revokePermission(permissionId) {
     return this.request("POST", `/permissions/${permissionId}/revoke`);
+  }
+  /** List the payees allowlisted on a permission, plus its current policy. */
+  async listPayees(permissionId) {
+    return this.request("GET", `/permissions/${permissionId}/payees`);
+  }
+  /**
+   * Pin a payee to a permission's allowlist.
+   *
+   * The reference is resolved to a Kairune agent when possible, so an entry
+   * added by handle still matches a spend that names the same payee by wallet.
+   * A valid-but-unregistered wallet is accepted — the allowlist declares scope,
+   * not trust, so it is still refused by the trust gate until it registers.
+   */
+  async addPayee(permissionId, counterparty, input = {}) {
+    return this.request("POST", `/permissions/${permissionId}/payees`, {
+      counterparty,
+      ...input
+    });
+  }
+  /** Remove a payee from a permission's allowlist (by row id or reference). */
+  async removePayee(permissionId, reference) {
+    return this.request(
+      "DELETE",
+      `/permissions/${permissionId}/payees/${encodeURIComponent(reference)}`
+    );
+  }
+  /**
+   * Change a permission's payee scope in place.
+   *
+   * Lets you TIGHTEN an existing grant (e.g. `open` → `allowlist`) without
+   * revoking and re-granting, so the permission id and its spend history
+   * survive. Switching to `allowlist` requires at least one payee — supply them
+   * via `payees` if the allowlist is still empty.
+   */
+  async setCounterpartyPolicy(permissionId, counterparty_policy, input = {}) {
+    return this.request("POST", `/permissions/${permissionId}/counterparty-policy`, {
+      counterparty_policy,
+      ...input
+    });
   }
   /**
    * Authorize a spend against a permission. Enforces the ceiling — and the
@@ -227,6 +272,11 @@ var Kairune = class {
    * on Kairune's trust check: a payment to a payee whose verdict is `decline`
    * (unregistered, suspended, or recently charged-back) is refused before any
    * budget is touched, resolving as `approved: false` with `verdict: 'decline'`.
+   *
+   * When the permission's `counterparty_policy` is `required` or `allowlist`,
+   * `counterparty` is mandatory: omitting it is refused with
+   * `counterparty_required`, and naming a payee outside an allowlist is refused
+   * with `counterparty_not_allowed` — both before any budget is touched.
    */
   async spend(permissionId, input) {
     const { idempotencyKey, ...body } = input;

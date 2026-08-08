@@ -6,8 +6,8 @@
 <meta name="virtual-protocol-site-verification" content="7dbccd717353dca1ea036ebce2f12374" />
 <title>Kairune API — docs</title>
 <link rel="icon" href="/assets/img/logo-mark-solid.svg" type="image/svg+xml" />
-<link rel="stylesheet" href="/assets/css/styles.css?v=5" />
-<link rel="stylesheet" href="/docs/docs.css?v=1" />
+<link rel="stylesheet" href="/assets/css/styles.css?v=8" />
+<link rel="stylesheet" href="/docs/docs.css?v=2" />
 </head>
 <body class="docs">
 
@@ -46,14 +46,16 @@ curl -X POST https://kairune.online/api/agents/AGENT_ID/attestations \
   -d '{"kind":"task_completed"}'
 
 # 3. Grant scoped spend (ceiling capped by tier)
+#    optional: pin who it may pay
 curl -X POST https://kairune.online/api/agents/AGENT_ID/permissions \
   -H 'Content-Type: application/json' \
-  -d '{"category":"compute","ceiling":100,"period":"day"}'
+  -d '{"category":"compute","ceiling":100,"period":"day",
+       "counterparty_policy":"allowlist","payees":["gpu-vendor"]}'
 
-# 4. Authorize a spend against the grant (enforces the ceiling)
+# 4. Authorize a spend against the grant (enforces ceiling + payee scope)
 curl -X POST https://kairune.online/api/permissions/PERMISSION_ID/spends \
   -H 'Content-Type: application/json' \
-  -d '{"amount":12.5,"note":"gpu hour"}'
+  -d '{"amount":12.5,"note":"gpu hour","counterparty":"gpu-vendor"}'
 
 # 5. Read score + history
 curl https://kairune.online/api/agents/AGENT_ID</pre>
@@ -83,19 +85,30 @@ curl https://kairune.online/api/agents/AGENT_ID</pre>
       <h2>Permissions</h2>
       <ul class="docs-eps">
         <li><code>GET /agents/:id/permissions</code></li>
-        <li><code>POST /agents/:id/permissions</code> — <span class="m">category, ceiling</span></li>
+        <li><code>POST /agents/:id/permissions</code> — <span class="m">category, ceiling, counterparty_policy, payees</span></li>
         <li><code>POST /permissions/:pid/revoke</code></li>
       </ul>
       <p class="docs-note">Ceiling is capped by trust tier. Periods: day | week | month.</p>
     </article>
     <article class="docs-card">
+      <h2>Payee scope</h2>
+      <ul class="docs-eps">
+        <li><code>GET /permissions/:pid/payees</code> — policy + allowlist</li>
+        <li><code>POST /permissions/:pid/payees</code> — <span class="m">counterparty, label</span></li>
+        <li><code>DELETE /permissions/:pid/payees/:ref</code></li>
+        <li><code>POST /permissions/:pid/counterparty-policy</code> — <span class="m">counterparty_policy, payees</span></li>
+      </ul>
+      <p class="docs-note">A ceiling caps <b>how much</b>; the policy caps <b>who</b>. <code>open</code> — any payee. <code>required</code> — every spend must name one. <code>allowlist</code> — only pinned payees, matched by handle or wallet. Scope is checked before the trust gate, so an out-of-scope payee is refused without leaking trust data — and an allowlisted payee is still fully trust-checked.</p>
+    </article>
+    <article class="docs-card">
       <h2>Spends</h2>
       <ul class="docs-eps">
-        <li><code>POST /permissions/:pid/spends</code> — <span class="m">amount, note</span></li>
+        <li><code>POST /permissions/:pid/spends</code> — <span class="m">amount, note, counterparty</span></li>
+        <li><code>POST /permissions/:pid/spends/preview</code> — dry run</li>
         <li><code>GET /permissions/:pid/budget</code> — used / remaining</li>
         <li><code>GET /permissions/:pid/spends</code> — spend history</li>
       </ul>
-      <p class="docs-note">Charges are checked against the remaining budget in a rolling day | week | month window. Over-budget or revoked → rejected.</p>
+      <p class="docs-note">Charges are checked against the remaining budget in a rolling day | week | month window. Over-budget or revoked → rejected. Under a scoped policy, <code>counterparty_required</code> or <code>counterparty_not_allowed</code> → rejected before any budget math.</p>
     </article>
     <article class="docs-card">
       <h2>Meta</h2>

@@ -97,6 +97,7 @@ CREATE TABLE IF NOT EXISTS permissions (
                       CHECK (status IN ('active', 'revoked')),
   velocity_limit    REAL,                          -- optional burst cap: max spend per velocity_window (NULL = no limit)
   velocity_window_s INTEGER,                        -- rolling window (seconds) for the velocity limit (NULL = default 60)
+  counterparty_policy TEXT NOT NULL DEFAULT 'open', -- open | required | allowlist (see permission_payees)
   granted_by        TEXT,                          -- who granted it
   created_at        TEXT NOT NULL,
   revoked_at        TEXT,
@@ -104,6 +105,36 @@ CREATE TABLE IF NOT EXISTS permissions (
 );
 
 CREATE INDEX IF NOT EXISTS idx_permissions_agent ON permissions(agent_id);
+
+-- NOTE: counterparty_policy deliberately carries NO CHECK constraint. It is
+-- validated in permissionService (COUNTERPARTY_POLICIES) so that a freshly
+-- created database and one upgraded via ensurePermissionColumns()'s ALTER
+-- TABLE behave identically — SQLite cannot add a CHECK to an existing table,
+-- so putting one here would make the two paths diverge.
+
+-- ---------------------------------------------------------------------------
+-- permission_payees: the allowlist of payees a permission may pay.
+--
+-- Only consulted when the parent permission's counterparty_policy is
+-- 'allowlist'. Each row pins one approved payee. `agent_id` is the resolved
+-- Kairune agent when the reference matched one (so a payee added by handle
+-- still matches when a spend names their wallet, and vice versa); it is NULL
+-- for a valid-but-unregistered wallet, which then matches on `reference`.
+-- ---------------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS permission_payees (
+  id            TEXT PRIMARY KEY,            -- uuid
+  permission_id TEXT NOT NULL,
+  agent_id      TEXT,                        -- resolved payee agent (NULL = unregistered wallet)
+  reference     TEXT NOT NULL,               -- normalized ref as supplied (handle / wallet / id)
+  label         TEXT,                        -- optional operator note ("primary GPU vendor")
+  created_at    TEXT NOT NULL,
+  FOREIGN KEY (permission_id) REFERENCES permissions(id) ON DELETE CASCADE
+);
+
+CREATE INDEX IF NOT EXISTS idx_permission_payees_permission
+  ON permission_payees(permission_id);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_permission_payees_unique
+  ON permission_payees(permission_id, reference);
 
 -- ---------------------------------------------------------------------------
 -- spends: actual charges authorized against a permission (enforces the ceiling)

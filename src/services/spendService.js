@@ -224,6 +224,81 @@ async function usedInWindow(permissionId, period, nowMs) {
 const GATE_BLOCKING_VERDICTS = Object.freeze(['decline']);
 
 /**
+ * Enforce a permission's payee scope (its `counterparty_policy`).
+ *
+ * The trust gate can only run when a spend names a payee — so leaving that
+ * field out skipped it entirely, which made the strongest guarantee in the
+ * product opt-in. This resolves the scope declared on the GRANT, so the code
+ * doing the spending cannot opt out of it:
+ *
+ *   open       payee optional (legacy)
+ *   required   payee mandatory → `counterparty_required` when missing
+ *   allowlist  payee mandatory AND pinned → `counterparty_not_allowed` otherwise
+ *
+ * Scope is checked BEFORE the trust assessment on purpose: an out-of-scope
+ * payee is refused without disclosing anything about its trust standing, and
+ * an in-scope payee is still fully trust-checked afterwards. Being on the
+ * allowlist means "in scope", never "trusted".
+ *
+ * @param {object} permission
+ * @param {string|null} counterparty
+ * @returns {Promise<{ok:boolean, policy:string, reason?:string, message?:string, payee?:object|null}>}
+ */
+async function enforcePayeeScope(permission, counterparty) {
+  const policy = String(permission.counterparty_policy || 'open');
+  const ref = counterparty == null ? '' : String(counterparty).trim();
+
+  if (policy === 'open') return { ok: true, policy };
+
+  if (!ref) {
+    return {
+      ok: false,
+      policy,
+      reason: 'counterparty_required',
+      message:
+        policy === 'allowlist'
+          ? 'This permission may only pay allowlisted payees — name a `counterparty` on the spend'
+          : 'This permission requires every spend to name a `counterparty`',
+    };
+  }
+
+  if (policy !== 'allowlist') return { ok: true, policy };
+
+  const db = await getDb();
+  const isWallet = /^0x[a-fA-F0-9]{40}$/.test(ref);
+  const normalized = isWallet ? ref.toLowerCase() : ref;
+
+  // Resolve the named payee so allowlist matching is by IDENTITY, not spelling:
+  // an entry pinned by handle still matches a spend that names the wallet.
+  const agent = isWallet
+    ? await agentService.getAgentByWallet(normalized)
+    : await agentService.getAgent(normalized);
+
+  const res = await db.execute({
+    sql: `SELECT * FROM permission_payees
+          WHERE permission_id = ?
+            AND (LOWER(reference) = LOWER(?) ${agent ? 'OR agent_id = ?' : ''})
+          LIMIT 1`,
+    args: agent
+      ? [permission.id, normalized, agent.id]
+      : [permission.id, normalized],
+  });
+  const match = res.rows[0];
+
+  if (!match) {
+    return {
+      ok: false,
+      policy,
+      reason: 'counterparty_not_allowed',
+      message: `Payee "${ref}" is not on this permission's allowlist — payment refused`,
+      payee: null,
+    };
+  }
+
+  return { ok: true, policy, payee: match };
+}
+
+/**
  * Assess a payee before a spend is charged to it.
  *
  * This is the bridge between the two halves of Kairune: the counterparty trust
@@ -347,6 +422,38 @@ async function authorizeSpend(
   if (agent.status !== 'active') {
     const err = new Error('Cannot spend for a suspended agent');
     err.status = 409;
+    throw err;
+  }
+
+  // Payee scope: enforce the permission's own counterparty_policy before
+  // anything else. A `required`/`allowlist` grant refuses a spend that omits a
+  // payee or names one outside its scope, so the trust gate below can no longer
+  // be skipped by simply leaving the field out.
+  const scope = await enforcePayeeScope(permission, counterparty);
+  if (!scope.ok) {
+    const err = new Error(scope.message);
+    err.status = 409;
+    err.details = {
+      counterparty: counterparty == null ? null : String(counterparty).trim(),
+      counterparty_policy: scope.policy,
+      reason: scope.reason,
+    };
+    await emitSpendEvent('spend.counterparty_blocked', {
+      permission_id: permissionId,
+      agent_id: permission.agent_id,
+      requested: value,
+      counterparty: counterparty == null ? null : String(counterparty).trim(),
+      counterparty_policy: scope.policy,
+      reason: scope.reason,
+    });
+    await recordEvent('spend.blocked', {
+      agent_id: permission.agent_id,
+      agent_handle: agent.handle,
+      amount: value,
+      ceiling: Number(permission.ceiling),
+      period: permission.period,
+      reason: scope.reason,
+    });
     throw err;
   }
 
@@ -651,6 +758,7 @@ async function previewSpend(
     remaining,
     velocity_limit: vel ? vel.limit : null,
     velocity_window_s: vel ? vel.windowSeconds : null,
+    counterparty_policy: String(permission.counterparty_policy || 'open'),
   };
 
   // Idempotent replay: a spend already exists for this key, so a real request
@@ -681,6 +789,23 @@ async function previewSpend(
   }
   if (agent.status !== 'active') {
     return { allowed: false, reason: 'agent_suspended', requested: value, budget };
+  }
+
+  // Payee scope — same position and rule as authorizeSpend, so a preview of an
+  // out-of-scope (or unnamed) payee matches the real refusal that would follow.
+  const scope = await enforcePayeeScope(permission, counterparty);
+  if (!scope.ok) {
+    return {
+      allowed: false,
+      reason: scope.reason,
+      requested: value,
+      budget,
+      counterparty: {
+        reference: counterparty == null ? null : String(counterparty).trim(),
+        counterparty_policy: scope.policy,
+        message: scope.message,
+      },
+    };
   }
 
   // Counterparty gate — same position and rule as authorizeSpend, so a preview
@@ -767,6 +892,7 @@ async function budgetSummary(permissionId, opts = {}) {
     remaining: Math.max(0, ceiling - used),
     velocity_limit: vel ? vel.limit : null,
     velocity_window_s: vel ? vel.windowSeconds : null,
+    counterparty_policy: String(permission.counterparty_policy || 'open'),
   };
 }
 
@@ -822,4 +948,5 @@ module.exports = {
   MAX_IDEMPOTENCY_KEY_LEN,
   DEFAULT_VELOCITY_WINDOW_S,
   GATE_BLOCKING_VERDICTS,
+  enforcePayeeScope,
 };

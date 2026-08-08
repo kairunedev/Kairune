@@ -8,7 +8,7 @@
 <meta name="twitter:creator" content="@usekairune" />
 <title>Kairune — Spending limits your AI agents actually earn</title>
 <link rel="icon" href="assets/img/logo-mark-solid.svg" type="image/svg+xml" />
-<link rel="stylesheet" href="assets/css/styles.css?v=6" />
+<link rel="stylesheet" href="assets/css/styles.css?v=8" />
 </head>
 <body>
 
@@ -49,11 +49,16 @@
         <a href="/app" class="btn btn-primary">Launch console</a>
         <a href="/app/?demo=1" class="btn btn-ghost">Try demo loop</a>
       </div>
-      <button type="button" class="ca-pill hero-anim d6" id="caCopy" data-ca="0xc5ac3b7664ba1ac915145cc58f50b89ec3a2970d" title="0xc5ac3b7664ba1ac915145cc58f50b89ec3a2970d" aria-label="Copy the $KAIRUNE contract address">
-        <span class="ca-pill-badge"><img src="assets/img/virtuals-mark-cyan.svg" width="14" height="14" alt="" />$KAIRUNE</span>
-        <code class="ca-pill-addr" id="caValue"><span class="ca-full">0xc5ac3b7664ba1ac915145cc58f50b89ec3a2970d</span><span class="ca-short">0xc5ac…970d</span></code>
-        <span class="ca-pill-copy" id="caCopyLabel">copy</span>
-      </button>
+      <div class="ca-row hero-anim d6">
+        <button type="button" class="ca-pill" id="caCopy" data-ca="0xc5ac3b7664ba1ac915145cc58f50b89ec3a2970d" title="0xc5ac3b7664ba1ac915145cc58f50b89ec3a2970d" aria-label="Copy the $KAIRUNE contract address">
+          <span class="ca-pill-badge"><img src="assets/img/virtuals-mark-cyan.svg" width="14" height="14" alt="" />$KAIRUNE</span>
+          <code class="ca-pill-addr" id="caValue"><span class="ca-full">0xc5ac3b7664ba1ac915145cc58f50b89ec3a2970d</span><span class="ca-short">0xc5ac…970d</span></code>
+          <span class="ca-pill-copy" id="caCopyLabel">copy</span>
+        </button>
+        <a class="ca-verify" href="https://robinscan.io/token/0xc5ac3b7664ba1ac915145cc58f50b89ec3a2970d" target="_blank" rel="noopener noreferrer" aria-label="Verify the $KAIRUNE contract on Robinscan">
+          verify on robinscan <span aria-hidden="true">↗</span>
+        </a>
+      </div>
       <p class="hero-foot hero-anim d7">interactive demo — real trust scores, no wallet needed</p>
     </div>
     <div class="graph-panel reveal">
@@ -193,6 +198,11 @@
         <h3>Scoped permissions</h3>
         <p>Grant spending by category, ceiling, and duration — never a blank check.</p>
       </div>
+      <div class="cell span2 reveal">
+        <span class="k">PS</span>
+        <h3>Payee allowlists</h3>
+        <p>A ceiling caps how much. An allowlist caps <b>who</b> — pin the exact vendors a grant may pay, and a stranger is refused even with budget to spare. Trust still applies on top: being on the list is scope, never a free pass.</p>
+      </div>
       <div class="cell reveal">
         <span class="k">AG</span>
         <h3>Agent-to-agent graph</h3>
@@ -203,7 +213,7 @@
         <h3>Instant revocation</h3>
         <p>Pull a permission the moment something looks wrong, reflected everywhere at once.</p>
       </div>
-      <div class="cell reveal">
+      <div class="cell span2 reveal">
         <span class="k">HL</span>
         <h3>Human-in-the-loop overrides</h3>
         <p>Set thresholds where an agent must pause and ask before it spends another cent — and an open attestation standard that's free to read, cheap to write, and portable across any chain or framework.</p>
@@ -254,6 +264,46 @@
         <div class="metric-row"><span>next_tier_eta</span><b>~12 days</b></div>
         <div class="bar"><i id="bar2"></i></div>
       </div>
+    </div>
+  </div>
+</section>
+
+<section id="gates">
+  <div class="wrap">
+    <span class="tag">two gates, one decision</span>
+    <h2 class="reveal">Every spend clears scope before it clears trust</h2>
+    <p class="section-sub reveal">A grant answers two separate questions. <b>Who</b> may be paid is scope. <b>Whether they've earned it</b> is trust. Kairune checks them in that order, so an out-of-scope payee is refused without ever learning anything about the trust graph.</p>
+    <div class="gate-rig reveal" id="gateRig">
+      <div class="gate-track">
+        <div class="gate-node gate-origin">
+          <span class="gate-k">REQ</span>
+          <b id="gateAmount">$42.00</b>
+          <span class="gate-sub" id="gatePayee">→ gpu-vendor</span>
+        </div>
+        <div class="gate-wire" data-leg="1"><i class="gate-packet"></i></div>
+        <div class="gate-node gate-check" data-gate="scope">
+          <span class="gate-k">01</span>
+          <b>scope</b>
+          <span class="gate-sub">is this payee allowed?</span>
+        </div>
+        <div class="gate-wire" data-leg="2"><i class="gate-packet"></i></div>
+        <div class="gate-node gate-check" data-gate="trust">
+          <span class="gate-k">02</span>
+          <b>trust</b>
+          <span class="gate-sub">has it earned the room?</span>
+        </div>
+        <div class="gate-wire" data-leg="3"><i class="gate-packet"></i></div>
+        <div class="gate-node gate-settle" data-gate="settle">
+          <span class="gate-k">OK</span>
+          <b>settled</b>
+          <span class="gate-sub">recorded against budget</span>
+        </div>
+      </div>
+      <div class="gate-verdict" id="gateVerdict" aria-live="polite">
+        <span class="gate-verdict-dot"></span>
+        <code id="gateVerdictText">booting scenario…</code>
+      </div>
+      <div class="gate-scenarios" id="gateScenarios"></div>
     </div>
   </div>
 </section>
@@ -320,6 +370,7 @@
       <div class="logo" style="font-size:14px;"><img src="assets/img/logo-mark.svg" width="22" height="22" alt="Kairune" />Kairune</div>
       <div class="foot-links">
         <a href="https://app.virtuals.io/virtuals/100623" target="_blank" rel="noopener noreferrer">virtuals</a>
+        <a href="https://robinscan.io/token/0xc5ac3b7664ba1ac915145cc58f50b89ec3a2970d" target="_blank" rel="noopener noreferrer">explorer</a>
         <a href="https://x.com/usekairune" target="_blank" rel="noopener noreferrer">@usekairune</a>
         <a href="/app">console</a>
         <a href="/docs">api_docs</a>
@@ -330,7 +381,7 @@
   </div>
 </footer>
 
-<script src="assets/js/main.js?v=6" defer></script>
+<script src="assets/js/main.js?v=8" defer></script>
 
 </body>
 </html>
