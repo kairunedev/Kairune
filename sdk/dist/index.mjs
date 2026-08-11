@@ -183,6 +183,11 @@ var Kairune = class {
    * omitting it); `allowlist` additionally restricts spends to the `payees` you
    * pin here — "this budget may only ever pay these vendors". An `allowlist`
    * grant requires a non-empty `payees` array.
+   *
+   * Pass `expires_in_s` (or an absolute `expires_at`) to make the grant
+   * time-bound: once the deadline passes it stops authorizing on its own, so a
+   * budget delegated for one job does not stay live because nobody remembered
+   * to revoke it. Omit both for a grant that never expires.
    */
   async grantPermission(agentId, input) {
     return this.request("POST", `/agents/${agentId}/permissions`, input);
@@ -229,6 +234,20 @@ var Kairune = class {
       counterparty_policy,
       ...input
     });
+  }
+  /**
+   * Set, extend, or clear a permission's expiry deadline.
+   *
+   * Extending keeps the permission id and its spend history, so a renewed grant
+   * does not reset the period's used budget. Call with no arguments to remove
+   * the deadline entirely (back to never expires).
+   *
+   * An already-expired grant can be revived this way — the response carries
+   * `revived: true`. A revoked permission cannot: revocation is final by
+   * design, and re-granting is the explicit path back.
+   */
+  async setExpiry(permissionId, input = {}) {
+    return this.request("POST", `/permissions/${permissionId}/expiry`, input);
   }
   /**
    * Authorize a spend against a permission. Enforces the ceiling — and the

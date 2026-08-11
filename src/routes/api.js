@@ -22,6 +22,7 @@
  *   GET    /api/agents/:id/permissions        list permissions
  *   POST   /api/agents/:id/permissions        grant permission
  *   POST   /api/permissions/:pid/revoke       revoke permission
+ *   POST   /api/permissions/:pid/expiry        set / extend / clear the expiry deadline
  *   GET    /api/permissions/:pid/budget        remaining spend budget
  *   GET    /api/permissions/:pid/spends        spend history
  *   POST   /api/permissions/:pid/spends/preview dry-run a spend (no charge, go/no-go)
@@ -113,6 +114,9 @@ router.get('/meta', (req, res) => {
     payees_endpoint: '/api/permissions/:pid/payees',
     counterparty_policy_endpoint: '/api/permissions/:pid/counterparty-policy',
     max_payees_per_permission: permissionService.MAX_PAYEES_PER_PERMISSION,
+    permission_expiry: true,
+    permission_expiry_endpoint: '/api/permissions/:pid/expiry',
+    max_expires_in_s: permissionService.MAX_EXPIRES_IN_S,
     rank_badge_endpoint: '/a/:handle/rank.svg',
     wallet_lookup_endpoint: '/api/wallets/:wallet',
     spend_preview_endpoint: '/api/permissions/:pid/spends/preview',
@@ -791,6 +795,8 @@ router.post(
       velocity_window_s: req.body.velocity_window_s,
       counterparty_policy: req.body.counterparty_policy,
       payees: req.body.payees,
+      expires_in_s: req.body.expires_in_s,
+      expires_at: req.body.expires_at,
     });
     res.status(201).json({ permission });
   })
@@ -858,6 +864,22 @@ router.delete(
       throw err;
     }
     res.json({ removed });
+  })
+);
+
+// Set, extend, or clear a grant's expiry deadline. Body takes `expires_in_s`
+// (relative seconds) or `expires_at` (absolute ISO8601); an empty body clears
+// the deadline so the permission never expires again.
+router.post(
+  '/permissions/:pid/expiry',
+  wrap(async (req, res) => {
+    requireAdmin(req);
+    const body = req.body || {};
+    const permission = await permissionService.setExpiry(req.params.pid, {
+      expires_in_s: body.expires_in_s,
+      expires_at: body.expires_at,
+    });
+    res.json({ permission });
   })
 );
 

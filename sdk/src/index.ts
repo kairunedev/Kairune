@@ -95,6 +95,12 @@ export interface Permission {
   counterparty_policy?: CounterpartyPolicy
   /** Allowlisted payees, returned when a grant seeds or updates them. */
   payees?: PermissionPayee[]
+  /** ISO8601 deadline after which the grant stops authorizing. `null` = never expires. */
+  expires_at?: string | null
+  /** Seconds left before the deadline (`0` once passed), or `null` when there is none. */
+  expires_in_s?: number | null
+  /** True when the deadline has passed. The row stays `active` — expiry is not revocation. */
+  expired?: boolean
   granted_by: string | null
   created_at: string
 }
@@ -114,6 +120,12 @@ export interface Budget {
   velocity_window_s?: number | null
   /** Payee scope enforced on every spend against this permission. */
   counterparty_policy?: CounterpartyPolicy
+  /** ISO8601 deadline after which the grant stops authorizing. `null` = never expires. */
+  expires_at?: string | null
+  /** Seconds left before the deadline (`0` once passed), or `null` when there is none. */
+  expires_in_s?: number | null
+  /** True when the deadline has passed, so every further spend is refused. */
+  expired?: boolean
 }
 
 export interface Spend {
@@ -162,6 +174,8 @@ export interface SpendBlocked {
     // payee-scope block (counterparty_required / counterparty_not_allowed)
     counterparty_policy?: CounterpartyPolicy
     reason?: SpendPreviewReason
+    // expiry block (permission_expired)
+    expires_at?: string | null
   }
 }
 
@@ -177,6 +191,8 @@ export type SpendPreviewReason =
   | 'counterparty_required'
   /** The named payee is not on this permission's allowlist. */
   | 'counterparty_not_allowed'
+  /** The grant's deadline has passed. Extend it with `setExpiry` to resume. */
+  | 'permission_expired'
 
 export interface SpendPreview {
   /** Whether a real charge with these inputs would be authorized right now. */
@@ -597,6 +613,11 @@ export class Kairune {
    * omitting it); `allowlist` additionally restricts spends to the `payees` you
    * pin here — "this budget may only ever pay these vendors". An `allowlist`
    * grant requires a non-empty `payees` array.
+   *
+   * Pass `expires_in_s` (or an absolute `expires_at`) to make the grant
+   * time-bound: once the deadline passes it stops authorizing on its own, so a
+   * budget delegated for one job does not stay live because nobody remembered
+   * to revoke it. Omit both for a grant that never expires.
    */
   async grantPermission(
     agentId: string,
@@ -609,6 +630,10 @@ export class Kairune {
       counterparty_policy?: CounterpartyPolicy
       /** Payee references (id / handle / wallet). Required for `allowlist`. */
       payees?: string[]
+      /** Lifetime in seconds from now (max 365 days). Mutually exclusive with `expires_at`. */
+      expires_in_s?: number
+      /** Absolute ISO8601 deadline. Mutually exclusive with `expires_in_s`. */
+      expires_at?: string
     }
   ): Promise<{ permission: Permission; capped: boolean }> {
     return this.request('POST', `/agents/${agentId}/permissions`, input)
@@ -673,6 +698,29 @@ export class Kairune {
       counterparty_policy,
       ...input,
     })
+  }
+
+  /**
+   * Set, extend, or clear a permission's expiry deadline.
+   *
+   * Extending keeps the permission id and its spend history, so a renewed grant
+   * does not reset the period's used budget. Call with no arguments to remove
+   * the deadline entirely (back to never expires).
+   *
+   * An already-expired grant can be revived this way — the response carries
+   * `revived: true`. A revoked permission cannot: revocation is final by
+   * design, and re-granting is the explicit path back.
+   */
+  async setExpiry(
+    permissionId: string,
+    input: {
+      /** Lifetime in seconds from now (max 365 days). Mutually exclusive with `expires_at`. */
+      expires_in_s?: number
+      /** Absolute ISO8601 deadline. Mutually exclusive with `expires_in_s`. */
+      expires_at?: string
+    } = {}
+  ): Promise<{ permission: Permission & { revived?: boolean } }> {
+    return this.request('POST', `/permissions/${permissionId}/expiry`, input)
   }
 
   /**

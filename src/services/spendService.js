@@ -13,6 +13,7 @@ const crypto = require('crypto');
 const { getDb } = require('../db');
 const agentService = require('./agentService');
 const webhookService = require('./webhookService');
+const { isExpired, expiresInSeconds } = require('./permissionService');
 
 function nowIso() {
   return new Date().toISOString();
@@ -413,6 +414,32 @@ async function authorizeSpend(
     throw err;
   }
 
+  // Expiry: a time-bound grant stops authorizing the moment its deadline
+  // passes, with no sweeper job required. Checked immediately after the revoke
+  // check because both answer the same question — is this grant still valid at
+  // all — and neither depends on the amount or the payee.
+  if (isExpired(permission, opts.nowMs)) {
+    const err = new Error('Permission has expired');
+    err.status = 409;
+    err.details = {
+      reason: 'permission_expired',
+      expires_at: permission.expires_at,
+    };
+    // The agent isn't loaded yet at this point, but every other row on the
+    // public feed is attributable, so resolve the handle rather than publishing
+    // an anonymous block. Costs one read on a path that already failed.
+    const expiredAgent = await agentService.getAgent(permission.agent_id).catch(() => null);
+    await recordEvent('spend.blocked', {
+      agent_id: permission.agent_id,
+      agent_handle: expiredAgent ? expiredAgent.handle : null,
+      amount: value,
+      ceiling: Number(permission.ceiling),
+      period: permission.period,
+      reason: 'permission_expired',
+    });
+    throw err;
+  }
+
   const agent = await agentService.getAgent(permission.agent_id);
   if (!agent) {
     const err = new Error('Agent not found');
@@ -759,6 +786,9 @@ async function previewSpend(
     velocity_limit: vel ? vel.limit : null,
     velocity_window_s: vel ? vel.windowSeconds : null,
     counterparty_policy: String(permission.counterparty_policy || 'open'),
+    expires_at: permission.expires_at || null,
+    expires_in_s: expiresInSeconds(permission, opts.nowMs),
+    expired: isExpired(permission, opts.nowMs),
   };
 
   // Idempotent replay: a spend already exists for this key, so a real request
@@ -781,6 +811,10 @@ async function previewSpend(
   // the real decision that would follow.
   if (permission.status !== 'active') {
     return { allowed: false, reason: 'permission_revoked', requested: value, budget };
+  }
+
+  if (isExpired(permission, opts.nowMs)) {
+    return { allowed: false, reason: 'permission_expired', requested: value, budget };
   }
 
   const agent = await agentService.getAgent(permission.agent_id);
@@ -893,6 +927,9 @@ async function budgetSummary(permissionId, opts = {}) {
     velocity_limit: vel ? vel.limit : null,
     velocity_window_s: vel ? vel.windowSeconds : null,
     counterparty_policy: String(permission.counterparty_policy || 'open'),
+    expires_at: permission.expires_at || null,
+    expires_in_s: expiresInSeconds(permission, opts.nowMs),
+    expired: isExpired(permission, opts.nowMs),
   };
 }
 

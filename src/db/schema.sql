@@ -98,6 +98,7 @@ CREATE TABLE IF NOT EXISTS permissions (
   velocity_limit    REAL,                          -- optional burst cap: max spend per velocity_window (NULL = no limit)
   velocity_window_s INTEGER,                        -- rolling window (seconds) for the velocity limit (NULL = default 60)
   counterparty_policy TEXT NOT NULL DEFAULT 'open', -- open | required | allowlist (see permission_payees)
+  expires_at        TEXT,                          -- ISO8601 deadline, NULL = never expires (see note below)
   granted_by        TEXT,                          -- who granted it
   created_at        TEXT NOT NULL,
   revoked_at        TEXT,
@@ -105,6 +106,16 @@ CREATE TABLE IF NOT EXISTS permissions (
 );
 
 CREATE INDEX IF NOT EXISTS idx_permissions_agent ON permissions(agent_id);
+
+-- NOTE: expiry is evaluated LAZILY — a permission past its expires_at keeps
+-- status='active' in the row and is refused at decision time instead. There is
+-- no sweeper job, because the deployment target is serverless and a background
+-- timer would not run reliably. Consequences that are deliberate:
+--   * expiry needs no write to take effect (it cannot fail to be applied), and
+--   * `status` continues to mean "was it revoked by a human", which keeps
+--     revoked_at meaningful and leaves the existing revoke path untouched.
+-- Anything reporting on "active" permissions must therefore also exclude
+-- expired ones (see permissionService.isExpired / ACTIVE_PERMISSION_SQL).
 
 -- NOTE: counterparty_policy deliberately carries NO CHECK constraint. It is
 -- validated in permissionService (COUNTERPARTY_POLICIES) so that a freshly

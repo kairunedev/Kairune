@@ -8,7 +8,7 @@
 <meta name="twitter:creator" content="@usekairune" />
 <title>Kairune — Spending limits your AI agents actually earn</title>
 <link rel="icon" href="assets/img/logo-mark-solid.svg" type="image/svg+xml" />
-<link rel="stylesheet" href="assets/css/styles.css?v=8" />
+<link rel="stylesheet" href="assets/css/styles.css?v=9" />
 </head>
 <body>
 
@@ -270,9 +270,9 @@
 
 <section id="gates">
   <div class="wrap">
-    <span class="tag">two gates, one decision</span>
-    <h2 class="reveal">Every spend clears scope before it clears trust</h2>
-    <p class="section-sub reveal">A grant answers two separate questions. <b>Who</b> may be paid is scope. <b>Whether they've earned it</b> is trust. Kairune checks them in that order, so an out-of-scope payee is refused without ever learning anything about the trust graph.</p>
+    <span class="tag">three gates, one decision</span>
+    <h2 class="reveal">Every spend clears time, then scope, then trust</h2>
+    <p class="section-sub reveal">A grant answers three separate questions. <b>How long</b> it stays live is expiry. <b>Who</b> may be paid is scope. <b>Whether they've earned it</b> is trust. Kairune checks them in that order, so a lapsed grant or an out-of-scope payee is refused without ever learning anything about the trust graph.</p>
     <div class="gate-rig reveal" id="gateRig">
       <div class="gate-track">
         <div class="gate-node gate-origin">
@@ -281,18 +281,24 @@
           <span class="gate-sub" id="gatePayee">→ gpu-vendor</span>
         </div>
         <div class="gate-wire" data-leg="1"><i class="gate-packet"></i></div>
-        <div class="gate-node gate-check" data-gate="scope">
+        <div class="gate-node gate-check" data-gate="clock">
           <span class="gate-k">01</span>
+          <b>clock</b>
+          <span class="gate-sub">is this grant still live?</span>
+        </div>
+        <div class="gate-wire" data-leg="2"><i class="gate-packet"></i></div>
+        <div class="gate-node gate-check" data-gate="scope">
+          <span class="gate-k">02</span>
           <b>scope</b>
           <span class="gate-sub">is this payee allowed?</span>
         </div>
-        <div class="gate-wire" data-leg="2"><i class="gate-packet"></i></div>
+        <div class="gate-wire" data-leg="3"><i class="gate-packet"></i></div>
         <div class="gate-node gate-check" data-gate="trust">
-          <span class="gate-k">02</span>
+          <span class="gate-k">03</span>
           <b>trust</b>
           <span class="gate-sub">has it earned the room?</span>
         </div>
-        <div class="gate-wire" data-leg="3"><i class="gate-packet"></i></div>
+        <div class="gate-wire" data-leg="4"><i class="gate-packet"></i></div>
         <div class="gate-node gate-settle" data-gate="settle">
           <span class="gate-k">OK</span>
           <b>settled</b>
@@ -381,7 +387,7 @@
   </div>
 </footer>
 
-<script src="assets/js/main.js?v=8" defer></script>
+<script src="assets/js/main.js?v=9" defer></script>
 
 </body>
 </html>

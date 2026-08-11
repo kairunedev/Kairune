@@ -451,15 +451,27 @@ if (caCopy && caValue) {
       label: 'allowlisted vendor',
       amount: '$42.00',
       payee: '→ gpu-vendor',
+      clock: 'pass',
       scope: 'pass',
       trust: 'pass',
       verdict: 'ok',
-      text: '200 · settled — payee on allowlist, tier_3 ceiling has room',
+      text: '200 · settled — grant live for 41m, payee on allowlist, tier_3 ceiling has room',
+    },
+    {
+      label: 'expired grant',
+      amount: '$42.00',
+      payee: '→ gpu-vendor',
+      clock: 'fail',
+      scope: 'skip',
+      trust: 'skip',
+      verdict: 'no',
+      text: '409 · permission_expired — deadline passed 6m ago. Same payee, same budget, no longer authorized.',
     },
     {
       label: 'stranger payee',
       amount: '$8.00',
       payee: '→ 0x9f31…c40a',
+      clock: 'pass',
       scope: 'fail',
       trust: 'skip',
       verdict: 'no',
@@ -469,6 +481,7 @@ if (caCopy && caValue) {
       label: 'no payee named',
       amount: '$15.00',
       payee: '→ (omitted)',
+      clock: 'pass',
       scope: 'fail',
       trust: 'skip',
       verdict: 'no',
@@ -478,6 +491,7 @@ if (caCopy && caValue) {
       label: 'allowlisted but declined',
       amount: '$90.00',
       payee: '→ flaky-vendor',
+      clock: 'pass',
       scope: 'pass',
       trust: 'fail',
       verdict: 'no',
@@ -492,11 +506,12 @@ if (caCopy && caValue) {
     verdictText: document.getElementById('gateVerdictText'),
     chips: document.getElementById('gateScenarios'),
   };
+  const clock = rig.querySelector('[data-gate="clock"]');
   const scope = rig.querySelector('[data-gate="scope"]');
   const trust = rig.querySelector('[data-gate="trust"]');
   const settle = rig.querySelector('[data-gate="settle"]');
-  const wires = [1, 2, 3].map(n => rig.querySelector(`[data-leg="${n}"]`));
-  if (!els.amount || !scope || !trust || !settle || wires.some(w => !w)) return;
+  const wires = [1, 2, 3, 4].map(n => rig.querySelector(`[data-leg="${n}"]`));
+  if (!els.amount || !clock || !scope || !trust || !settle || wires.some(w => !w)) return;
 
   let timers = [];
   let index = 0;
@@ -506,7 +521,7 @@ if (caCopy && caValue) {
   const after = (ms, fn) => { timers.push(setTimeout(fn, ms)); };
 
   function resetVisuals() {
-    [scope, trust, settle].forEach(n => n.classList.remove('pass', 'fail', 'idle'));
+    [clock, scope, trust, settle].forEach(n => n.classList.remove('pass', 'fail', 'idle'));
     wires.forEach(w => w.classList.remove('flow', 'live', 'dead'));
     els.verdict.classList.remove('ok', 'no');
   }
@@ -530,10 +545,12 @@ if (caCopy && caValue) {
 
     wires[0].classList.add('flow', 'live');
     after(step, () => {
-      scope.classList.add(s.scope);
-      if (s.scope === 'fail') {
+      clock.classList.add(s.clock);
+      if (s.clock === 'fail') {
         wires[1].classList.add('dead');
         wires[2].classList.add('dead');
+        wires[3].classList.add('dead');
+        scope.classList.add('idle');
         trust.classList.add('idle');
         settle.classList.add('idle');
         els.verdict.classList.add(s.verdict);
@@ -542,9 +559,11 @@ if (caCopy && caValue) {
       }
       wires[1].classList.add('flow', 'live');
       after(step, () => {
-        trust.classList.add(s.trust);
-        if (s.trust === 'fail') {
+        scope.classList.add(s.scope);
+        if (s.scope === 'fail') {
           wires[2].classList.add('dead');
+          wires[3].classList.add('dead');
+          trust.classList.add('idle');
           settle.classList.add('idle');
           els.verdict.classList.add(s.verdict);
           els.verdictText.textContent = s.text;
@@ -552,9 +571,20 @@ if (caCopy && caValue) {
         }
         wires[2].classList.add('flow', 'live');
         after(step, () => {
-          settle.classList.add('pass');
-          els.verdict.classList.add(s.verdict);
-          els.verdictText.textContent = s.text;
+          trust.classList.add(s.trust);
+          if (s.trust === 'fail') {
+            wires[3].classList.add('dead');
+            settle.classList.add('idle');
+            els.verdict.classList.add(s.verdict);
+            els.verdictText.textContent = s.text;
+            return;
+          }
+          wires[3].classList.add('flow', 'live');
+          after(step, () => {
+            settle.classList.add('pass');
+            els.verdict.classList.add(s.verdict);
+            els.verdictText.textContent = s.text;
+          });
         });
       });
     });

@@ -6,7 +6,7 @@
 <meta name="virtual-protocol-site-verification" content="7dbccd717353dca1ea036ebce2f12374" />
 <title>Kairune API — docs</title>
 <link rel="icon" href="/assets/img/logo-mark-solid.svg" type="image/svg+xml" />
-<link rel="stylesheet" href="/assets/css/styles.css?v=8" />
+<link rel="stylesheet" href="/assets/css/styles.css?v=9" />
 <link rel="stylesheet" href="/docs/docs.css?v=2" />
 </head>
 <body class="docs">
@@ -46,13 +46,14 @@ curl -X POST https://kairune.online/api/agents/AGENT_ID/attestations \
   -d '{"kind":"task_completed"}'
 
 # 3. Grant scoped spend (ceiling capped by tier)
-#    optional: pin who it may pay
+#    optional: pin who it may pay, and how long it lives
 curl -X POST https://kairune.online/api/agents/AGENT_ID/permissions \
   -H 'Content-Type: application/json' \
   -d '{"category":"compute","ceiling":100,"period":"day",
-       "counterparty_policy":"allowlist","payees":["gpu-vendor"]}'
+       "counterparty_policy":"allowlist","payees":["gpu-vendor"],
+       "expires_in_s":3600}'
 
-# 4. Authorize a spend against the grant (enforces ceiling + payee scope)
+# 4. Authorize a spend against the grant (ceiling + payee scope + expiry)
 curl -X POST https://kairune.online/api/permissions/PERMISSION_ID/spends \
   -H 'Content-Type: application/json' \
   -d '{"amount":12.5,"note":"gpu hour","counterparty":"gpu-vendor"}'
@@ -85,7 +86,7 @@ curl https://kairune.online/api/agents/AGENT_ID</pre>
       <h2>Permissions</h2>
       <ul class="docs-eps">
         <li><code>GET /agents/:id/permissions</code></li>
-        <li><code>POST /agents/:id/permissions</code> — <span class="m">category, ceiling, counterparty_policy, payees</span></li>
+        <li><code>POST /agents/:id/permissions</code> — <span class="m">category, ceiling, counterparty_policy, payees, expires_in_s</span></li>
         <li><code>POST /permissions/:pid/revoke</code></li>
       </ul>
       <p class="docs-note">Ceiling is capped by trust tier. Periods: day | week | month.</p>
@@ -101,6 +102,15 @@ curl https://kairune.online/api/agents/AGENT_ID</pre>
       <p class="docs-note">A ceiling caps <b>how much</b>; the policy caps <b>who</b>. <code>open</code> — any payee. <code>required</code> — every spend must name one. <code>allowlist</code> — only pinned payees, matched by handle or wallet. Scope is checked before the trust gate, so an out-of-scope payee is refused without leaking trust data — and an allowlisted payee is still fully trust-checked.</p>
     </article>
     <article class="docs-card">
+      <h2>Expiry</h2>
+      <ul class="docs-eps">
+        <li><code>POST /agents/:id/permissions</code> — <span class="m">expires_in_s | expires_at</span></li>
+        <li><code>POST /permissions/:pid/expiry</code> — <span class="m">expires_in_s | expires_at</span></li>
+        <li><code>POST /permissions/:pid/expiry</code> — empty body clears the deadline</li>
+      </ul>
+      <p class="docs-note">A ceiling caps <b>how much</b>, the policy caps <b>who</b>, expiry caps <b>how long</b>. Past its deadline a grant stops authorizing on its own — no revoke call, no cleanup job — and spends are refused with <code>permission_expired</code>. Max lifetime 365 days; omit both fields for a grant that never expires. Extending keeps the permission id and its spend history, so a renewal does not reset used budget. Expiry is not revocation: an expired grant can be extended back to life, a revoked one cannot.</p>
+    </article>
+    <article class="docs-card">
       <h2>Spends</h2>
       <ul class="docs-eps">
         <li><code>POST /permissions/:pid/spends</code> — <span class="m">amount, note, counterparty</span></li>
@@ -108,7 +118,7 @@ curl https://kairune.online/api/agents/AGENT_ID</pre>
         <li><code>GET /permissions/:pid/budget</code> — used / remaining</li>
         <li><code>GET /permissions/:pid/spends</code> — spend history</li>
       </ul>
-      <p class="docs-note">Charges are checked against the remaining budget in a rolling day | week | month window. Over-budget or revoked → rejected. Under a scoped policy, <code>counterparty_required</code> or <code>counterparty_not_allowed</code> → rejected before any budget math.</p>
+      <p class="docs-note">Charges are checked against the remaining budget in a rolling day | week | month window. Over-budget or revoked → rejected. Under a scoped policy, <code>counterparty_required</code> or <code>counterparty_not_allowed</code> → rejected before any budget math. Past a grant's deadline, <code>permission_expired</code> → rejected first of all.</p>
     </article>
     <article class="docs-card">
       <h2>Meta</h2>

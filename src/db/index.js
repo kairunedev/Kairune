@@ -133,6 +133,9 @@ async function ensurePermissionColumns(c) {
       'counterparty_policy',
       `ALTER TABLE permissions ADD COLUMN counterparty_policy TEXT NOT NULL DEFAULT 'open'`,
     ],
+    // Expiry deadline (ISO8601). NULL = never expires, so every permission
+    // granted before this feature keeps working exactly as before.
+    ['expires_at', 'ALTER TABLE permissions ADD COLUMN expires_at TEXT'],
   ];
   for (const [col, sql] of additions) {
     if (!existing.has(col)) {

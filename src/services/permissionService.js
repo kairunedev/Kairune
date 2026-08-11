@@ -47,6 +47,106 @@ const MAX_PAYEES_PER_PERMISSION = 50;
 
 const PAYEE_LABEL_MAX = 120;
 
+// Upper bound on `expires_in_s` (365 days). Not a security control — it exists
+// so an obvious unit mistake (passing milliseconds, or a JS timestamp) fails
+// loudly at grant time instead of silently creating a grant that outlives the
+// company. An absolute `expires_at` far in the future is still accepted.
+const MAX_EXPIRES_IN_S = 365 * 24 * 60 * 60;
+
+/**
+ * Resolve a requested expiry into an ISO8601 deadline.
+ *
+ * Accepts either form, never both:
+ *   expires_in_s  relative seconds from now (ergonomic: "this grant lasts 1h")
+ *   expires_at    absolute ISO8601 instant (precise: "expires at market close")
+ *
+ * Returns null for "no expiry", which is the default and preserves the
+ * behaviour of every permission granted before this existed.
+ *
+ * @param {{expires_in_s?:*, expires_at?:*, nowMs?:number}} input
+ * @returns {string|null}
+ */
+function resolveExpiry({ expires_in_s = null, expires_at = null, nowMs } = {}) {
+  const hasIn = expires_in_s !== null && expires_in_s !== undefined && expires_in_s !== '';
+  const hasAt = expires_at !== null && expires_at !== undefined && expires_at !== '';
+
+  if (hasIn && hasAt) {
+    const err = new Error('Provide either expires_in_s or expires_at, not both');
+    err.status = 400;
+    throw err;
+  }
+  if (!hasIn && !hasAt) return null;
+
+  const now = typeof nowMs === 'number' ? nowMs : Date.now();
+
+  if (hasIn) {
+    const secs = Number(expires_in_s);
+    if (!Number.isInteger(secs) || secs <= 0) {
+      const err = new Error('expires_in_s must be a positive integer (seconds)');
+      err.status = 400;
+      throw err;
+    }
+    if (secs > MAX_EXPIRES_IN_S) {
+      const err = new Error(
+        `expires_in_s must be at most ${MAX_EXPIRES_IN_S} (365 days) — pass expires_at for a longer horizon`
+      );
+      err.status = 400;
+      throw err;
+    }
+    return new Date(now + secs * 1000).toISOString();
+  }
+
+  const parsed = new Date(String(expires_at));
+  const ms = parsed.getTime();
+  if (Number.isNaN(ms)) {
+    const err = new Error('expires_at must be a valid ISO8601 date-time');
+    err.status = 400;
+    throw err;
+  }
+  // A deadline in the past would create a grant that is dead on arrival. That
+  // is never what the caller meant, so refuse instead of silently accepting it.
+  if (ms <= now) {
+    const err = new Error('expires_at must be in the future');
+    err.status = 400;
+    throw err;
+  }
+  return parsed.toISOString();
+}
+
+/**
+ * Has this permission passed its expiry deadline?
+ * NULL expires_at → never expires. Comparison is on absolute time, so it is
+ * independent of the row's `status`.
+ * @param {object} permission
+ * @param {number} [nowMs]
+ * @returns {boolean}
+ */
+function isExpired(permission, nowMs) {
+  if (!permission || !permission.expires_at) return false;
+  const deadline = new Date(String(permission.expires_at)).getTime();
+  if (Number.isNaN(deadline)) return false;
+  return deadline <= (typeof nowMs === 'number' ? nowMs : Date.now());
+}
+
+/**
+ * Seconds until a permission expires (null when it never does, 0 once past).
+ * @param {object} permission
+ * @param {number} [nowMs]
+ * @returns {number|null}
+ */
+function expiresInSeconds(permission, nowMs) {
+  if (!permission || !permission.expires_at) return null;
+  const deadline = new Date(String(permission.expires_at)).getTime();
+  if (Number.isNaN(deadline)) return null;
+  const now = typeof nowMs === 'number' ? nowMs : Date.now();
+  return Math.max(0, Math.round((deadline - now) / 1000));
+}
+
+// A permission is usable when a human hasn't revoked it AND its deadline
+// hasn't passed. Kept as one string so every "active" query agrees; SQLite
+// compares ISO8601 lexicographically, which is why the stored format matters.
+const ACTIVE_PERMISSION_SQL = `status = 'active' AND (expires_at IS NULL OR expires_at > ?)`;
+
 /**
  * Normalize a payee reference for storage/comparison.
  * Wallets are lowercased (checksum-insensitive); everything else keeps its
@@ -80,7 +180,7 @@ function normalizeCounterpartyPolicy(raw) {
 /**
  * Grant a spending permission to an agent (ceiling capped by tier).
  * @param {string} agentId
- * @param {{category:string, ceiling:number, period?:string, granted_by?:string, counterparty_policy?:string, payees?:Array}} input
+ * @param {{category:string, ceiling:number, period?:string, granted_by?:string, counterparty_policy?:string, payees?:Array, expires_in_s?:number, expires_at?:string}} input
  * @returns {Promise<object>}
  */
 async function grantPermission(
@@ -94,6 +194,9 @@ async function grantPermission(
     velocity_window_s = null,
     counterparty_policy = 'open',
     payees = null,
+    expires_in_s = null,
+    expires_at = null,
+    nowMs = undefined,
   }
 ) {
   const db = await getDb();
@@ -150,6 +253,10 @@ async function grantPermission(
 
   const policy = normalizeCounterpartyPolicy(counterparty_policy);
 
+  // Time-bound the grant. Validated before the tier check so a malformed
+  // deadline is reported as the caller's input error, not as a trust problem.
+  const expiry = resolveExpiry({ expires_in_s, expires_at, nowMs });
+
   // An allowlist with nothing on it would authorize a budget that can never
   // pay anyone — almost certainly a mistake in the caller, so say so loudly
   // instead of granting a permission that blocks every spend.
@@ -189,19 +296,20 @@ async function grantPermission(
     velocity_limit: velLimit,
     velocity_window_s: velLimit ? (velWindow || 60) : null,
     counterparty_policy: policy,
+    expires_at: expiry,
     granted_by,
     created_at: nowIso(),
     revoked_at: null,
   };
 
   await db.execute({
-    sql: `INSERT INTO permissions (id, agent_id, category, ceiling, period, status, velocity_limit, velocity_window_s, counterparty_policy, granted_by, created_at, revoked_at)
-          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    sql: `INSERT INTO permissions (id, agent_id, category, ceiling, period, status, velocity_limit, velocity_window_s, counterparty_policy, expires_at, granted_by, created_at, revoked_at)
+          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
     args: [
       permission.id, permission.agent_id, permission.category, permission.ceiling,
       permission.period, permission.status, permission.velocity_limit,
-      permission.velocity_window_s, permission.counterparty_policy, permission.granted_by,
-      permission.created_at, permission.revoked_at,
+      permission.velocity_window_s, permission.counterparty_policy, permission.expires_at,
+      permission.granted_by, permission.created_at, permission.revoked_at,
     ],
   });
 
@@ -218,6 +326,7 @@ async function grantPermission(
     capped: finalCeiling < requested,
     requested_ceiling: requested,
     payees: added,
+    expires_in_s: expiresInSeconds(permission, nowMs),
   };
 }
 
@@ -458,26 +567,81 @@ async function revokePermission(permissionId) {
 }
 
 /**
+ * Change (or clear) an existing grant's expiry without revoking it, so the
+ * permission id and its spend history survive the change.
+ *
+ * Passing neither field clears the deadline (back to "never expires").
+ *
+ * NOTE: this can revive an already-expired grant by giving it a new future
+ * deadline. That is intentional — "the job needs another 30 minutes" is the
+ * common case, it requires the same admin auth as granting a fresh permission,
+ * and so it grants no privilege the caller didn't already have. Revocation
+ * stays final and is deliberately NOT reversible this way.
+ *
+ * @param {string} permissionId
+ * @param {{expires_in_s?:*, expires_at?:*, nowMs?:number}} [input]
+ * @returns {Promise<object>}
+ */
+async function setExpiry(permissionId, { expires_in_s = null, expires_at = null, nowMs } = {}) {
+  const db = await getDb();
+  const permission = await getPermissionOr404(permissionId);
+
+  if (permission.status !== 'active') {
+    const err = new Error('Cannot change the expiry of a revoked permission');
+    err.status = 409;
+    throw err;
+  }
+
+  const wasExpired = isExpired(permission, nowMs);
+  const expiry = resolveExpiry({ expires_in_s, expires_at, nowMs });
+
+  await db.execute({
+    sql: `UPDATE permissions SET expires_at = ? WHERE id = ?`,
+    args: [expiry, permissionId],
+  });
+
+  const got = await db.execute({
+    sql: `SELECT * FROM permissions WHERE id = ?`,
+    args: [permissionId],
+  });
+  const updated = got.rows[0];
+  return {
+    ...updated,
+    expires_in_s: expiresInSeconds(updated, nowMs),
+    expired: isExpired(updated, nowMs),
+    revived: wasExpired && !isExpired(updated, nowMs),
+  };
+}
+
+/**
  * List an agent's permissions.
+ * `activeOnly` means usable NOW — not revoked and not past its deadline.
  * @param {string} agentId
- * @param {{activeOnly?:boolean}} [opts]
+ * @param {{activeOnly?:boolean, nowMs?:number}} [opts]
  * @returns {Promise<object[]>}
  */
-async function listPermissions(agentId, { activeOnly = false } = {}) {
+async function listPermissions(agentId, { activeOnly = false, nowMs } = {}) {
   const db = await getDb();
+  const decorate = (rows) =>
+    rows.map((r) => ({
+      ...r,
+      expires_in_s: expiresInSeconds(r, nowMs),
+      expired: isExpired(r, nowMs),
+    }));
+
   if (activeOnly) {
     const res = await db.execute({
-      sql: `SELECT * FROM permissions WHERE agent_id = ? AND status = 'active'
+      sql: `SELECT * FROM permissions WHERE agent_id = ? AND ${ACTIVE_PERMISSION_SQL}
             ORDER BY created_at DESC`,
-      args: [agentId],
+      args: [agentId, new Date(typeof nowMs === 'number' ? nowMs : Date.now()).toISOString()],
     });
-    return res.rows;
+    return decorate(res.rows);
   }
   const res = await db.execute({
     sql: `SELECT * FROM permissions WHERE agent_id = ? ORDER BY created_at DESC`,
     args: [agentId],
   });
-  return res.rows;
+  return decorate(res.rows);
 }
 
 module.exports = {
@@ -488,9 +652,15 @@ module.exports = {
   listPayees,
   removePayee,
   setCounterpartyPolicy,
+  setExpiry,
   normalizeCounterpartyPolicy,
   normalizePayeeRef,
+  resolveExpiry,
+  isExpired,
+  expiresInSeconds,
   VALID_PERIODS,
   COUNTERPARTY_POLICIES,
   MAX_PAYEES_PER_PERMISSION,
+  MAX_EXPIRES_IN_S,
+  ACTIVE_PERMISSION_SQL,
 };
