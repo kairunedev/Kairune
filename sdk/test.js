@@ -218,6 +218,40 @@ async function resolveTarget() {
         'previewSpend() reports idempotent replay for a known key',
         replayPreview.allowed === true && replayPreview.idempotent_replay === true
       );
+
+      // Spend receipts: an approved charge carries a signature, and its public
+      // receipt verifies against the platform key.
+      assert(
+        'spend() result carries a receipt signature',
+        typeof first.spend.receipt_signature === 'string' && first.spend.receipt_signature.length > 0
+      );
+      const receipt = await k.getReceipt(first.spend.id);
+      assert('getReceipt() signed + verified', receipt.signed === true && receipt.verified === true);
+      assert('getReceipt() algorithm is ed25519', receipt.algorithm === 'ed25519');
+      assert('getReceipt() fields match the charge', receipt.fields.amount === 0.01 && receipt.fields.spend_id === first.spend.id);
+      assert('getReceipt() includes the public key', typeof receipt.public_key === 'string' && receipt.public_key.includes('PUBLIC KEY'));
+      assert('getReceipt() includes the canonical payload', typeof receipt.canonical === 'string');
+
+      // The replay returns the SAME receipt (never re-signed).
+      if (replay.approved) {
+        assert(
+          'spend() replay carries the original receipt',
+          replay.spend.receipt_signature === first.spend.receipt_signature
+        );
+      }
+
+      // Platform key endpoint: the current receipt-signing public key.
+      const pk = await k.getPlatformKey();
+      assert('getPlatformKey() is ed25519 for receipts', pk.algorithm === 'ed25519' && pk.purpose === 'receipt');
+      assert('getPlatformKey() matches the receipt key', pk.public_key === receipt.public_key);
+
+      // Unknown spend → 404.
+      try {
+        await k.getReceipt('no-such-spend');
+        fail++; console.log(FAIL, 'getReceipt(invalid) should throw');
+      } catch (e) {
+        assert('getReceipt(invalid) throws 404', e instanceof KairuneError && e.status === 404);
+      }
     }
 
     // velocity (burst) limit: a grant can add a max-spend-per-window cap on top

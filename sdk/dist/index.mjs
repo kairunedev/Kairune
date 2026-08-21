@@ -157,6 +157,32 @@ var Kairune = class {
     const res = await this.request("GET", `/permissions/${permissionId}/spends?limit=${limit}`);
     return res.spends;
   }
+  /**
+   * Get the public, independently-verifiable receipt for one approved spend.
+   *
+   * Every spend Kairune authorizes is signed with the platform Ed25519 key at
+   * charge time. The receipt carries the signed fields, the canonical payload,
+   * the signature, and the public key — so a payee or third party can prove a
+   * charge happened (who paid whom, how much, when) without trusting any
+   * database. `receipt.verified` is the result of checking the stored
+   * signature against the stored fields right now.
+   */
+  async getReceipt(spendId) {
+    const res = await this.request("GET", `/spends/${spendId}/receipt`);
+    return res.receipt;
+  }
+  /**
+   * Get the platform's current receipt-signing public key.
+   *
+   * Pin this out-of-band (docs, pinned post, DNS TXT) so receipt verification
+   * never has to fetch the key from the same server whose receipts it checks.
+   * `ephemeral: true` means the deployment has not configured a production
+   * key (RECEIPT_PRIVATE_KEY) — signatures still verify, but the key is not a
+   * long-lived commitment.
+   */
+  async getPlatformKey() {
+    return this.request("GET", "/platform-key");
+  }
   // -------------------------------------------------------------------------
   // Write — requires admin key
   // -------------------------------------------------------------------------

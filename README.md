@@ -48,6 +48,28 @@ Signing uses Node's built-in `crypto` (no extra dependency). Revoked keys cause 
 
 ---
 
+## Spend receipts
+
+Every approved spend is **signed with the platform Ed25519 key at charge time** — who paid, who was paid, how much, when. The signature is stored with the spend, and a public endpoint returns the full receipt: the signed fields, the canonical payload, the signature, and the public key.
+
+- `GET /api/spends/:sid/receipt` — public, no auth. Includes `verified`, computed on the spot.
+- `GET /api/platform-key` — the current receipt-signing public key (pin it out-of-band).
+- Anyone can prove a charge happened **without trusting any database**: verify the signature against the pinned key.
+- Spends recorded before receipts existed report `signed: false` — never an error.
+- Idempotent replays return the **same** receipt (never re-signed). Key rotation is supported: each spend pins the `receipt_key_id` that signed it.
+- Signing is best-effort at charge time — a key misconfiguration never blocks a legitimate spend.
+
+Configure a production key with `RECEIPT_PRIVATE_KEY` (PEM or 32-byte base64/base64url seed). Unset → an ephemeral in-memory key (dev/test), flagged `ephemeral: true` in the receipt and `/api/platform-key`.
+
+SDK:
+
+```ts
+const receipt = await k.getReceipt(spendId)   // { signed, verified, fields, canonical, signature, public_key, ... }
+const key = await k.getPlatformKey()          // { algorithm, purpose, public_key, ephemeral }
+```
+
+---
+
 ## Running locally
 
 Requires **Node.js >= 18**.
@@ -91,6 +113,7 @@ npm run dev
 | `PORT`     | `3040`        | HTTP port the server listens on    |
 | `HOST`     | `0.0.0.0`     | Bind address                       |
 | `NODE_ENV` | `development` | `development` \| `production`      |
+| `RECEIPT_PRIVATE_KEY` | —  | Ed25519 key for spend receipts (PEM or 32-byte base64 seed). Unset → ephemeral dev key |
 
 > `.env` is git-ignored. Never commit secrets.
 
@@ -122,6 +145,8 @@ npm run dev
 | GET    | `/api/agents/:id/permissions`     | List permissions                     |
 | POST   | `/api/agents/:id/permissions`     | Grant permission (capped by tier)    |
 | POST   | `/api/permissions/:pid/revoke`    | Revoke permission (instant)          |
+| GET    | `/api/spends/:sid/receipt`        | Public signed receipt for a spend    |
+| GET    | `/api/platform-key`               | Current receipt-signing public key   |
 
 ### Issuers — verifiable attestations (`/api`)
 | Method | Path                              | Auth            | Description                          |

@@ -27,6 +27,8 @@
  *   GET    /api/permissions/:pid/spends        spend history
  *   POST   /api/permissions/:pid/spends/preview dry-run a spend (no charge, go/no-go)
  *   POST   /api/permissions/:pid/spends        authorize a spend (enforces ceiling)
+ *   GET    /api/spends/:sid/receipt            public, independently-verifiable spend receipt
+ *   GET    /api/platform-key                   the platform's current receipt-signing public key
  *   POST   /api/webhooks                        register a spend-event webhook
  *   GET    /api/webhooks                        list webhooks
  *   GET    /api/webhooks/:id/deliveries         webhook delivery log
@@ -46,6 +48,7 @@ const issuerService = require('../services/issuerService');
 const issuerRequestService = require('../services/issuerRequestService');
 const webhookService = require('../services/webhookService');
 const verification = require('../services/verification');
+const receiptService = require('../services/receiptService');
 const replayGuard = require('../services/replayGuard');
 const trustScore = require('../services/trustScore');
 const issuerDiversity = require('../services/issuerDiversity');
@@ -120,6 +123,10 @@ router.get('/meta', (req, res) => {
     rank_badge_endpoint: '/a/:handle/rank.svg',
     wallet_lookup_endpoint: '/api/wallets/:wallet',
     spend_preview_endpoint: '/api/permissions/:pid/spends/preview',
+    spend_receipts: true,
+    spend_receipt_endpoint: '/api/spends/:sid/receipt',
+    platform_key_endpoint: '/api/platform-key',
+    receipt_signed_fields: receiptService.RECEIPT_CANONICAL_FIELDS,
     spend_alert_threshold: spendService.resolveAlertThreshold(),
     default_velocity_window_s: spendService.DEFAULT_VELOCITY_WINDOW_S,
     idempotency_header: 'Idempotency-Key',
@@ -974,6 +981,42 @@ router.post(
     res.status(result.idempotent_replay ? 200 : 201).json(result);
   })
 );
+
+// ---------------------------------------------------------------------------
+// Spend receipts — "show me the receipt", cryptographically.
+//
+// Every approved spend is signed with the platform Ed25519 key at charge
+// time. This endpoint returns the signed fields, the canonical payload, the
+// signature, and the public key — and verifies the signature on the spot —
+// so a payee or third party can prove a charge happened without trusting any
+// database. Public + read-only, like /api/verify.
+// ---------------------------------------------------------------------------
+router.get(
+  '/spends/:sid/receipt',
+  wrap(async (req, res) => {
+    const spend = await spendService.getSpendById(req.params.sid);
+    if (!spend) {
+      const err = new Error('Spend not found');
+      err.status = 404;
+      throw err;
+    }
+    res.json({ receipt: await receiptService.buildReceipt(spend) });
+  })
+);
+
+// The platform's current receipt-signing public key, so verifiers can pin it
+// out-of-band (docs, pinned tweet, DNS TXT) instead of fetching it from the
+// same server whose receipts they are checking.
+router.get('/platform-key', (req, res) => {
+  const { publicKeyPem, ephemeral } = receiptService.getPlatformKey();
+  res.json({
+    algorithm: 'ed25519',
+    purpose: 'receipt',
+    public_key: publicKeyPem,
+    ephemeral,
+    receipt_endpoint: '/api/spends/:sid/receipt',
+  });
+});
 
 // ---------------------------------------------------------------------------
 // Webhooks (outbound spend event notifications) — admin-guarded

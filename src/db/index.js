@@ -205,6 +205,20 @@ async function ensureSpendColumns(c) {
   if (!existing.has('idempotency_key')) {
     await c.execute('ALTER TABLE spends ADD COLUMN idempotency_key TEXT');
   }
+  // Spend receipts: the payee named on the charge (NULL when none), the
+  // platform Ed25519 signature over the exact charge fields, and the
+  // platform_keys row that signed it. All NULL on spends recorded before
+  // receipts existed — a legacy spend simply has no receipt, which the
+  // receipt endpoint reports honestly.
+  if (!existing.has('payee')) {
+    await c.execute('ALTER TABLE spends ADD COLUMN payee TEXT');
+  }
+  if (!existing.has('receipt_signature')) {
+    await c.execute('ALTER TABLE spends ADD COLUMN receipt_signature TEXT');
+  }
+  if (!existing.has('receipt_key_id')) {
+    await c.execute('ALTER TABLE spends ADD COLUMN receipt_key_id TEXT');
+  }
   // Partial unique index: dedupes keyed spends per permission, exempts NULLs.
   await c.execute(
     `CREATE UNIQUE INDEX IF NOT EXISTS idx_spends_idempotency

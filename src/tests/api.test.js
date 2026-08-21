@@ -10,7 +10,7 @@ const { test, before, after } = require('node:test');
 const assert = require('node:assert');
 const http = require('node:http');
 const crypto = require('node:crypto');
-const { canonicalPayload } = require('../services/verification');
+const { canonicalPayload, verifySignature } = require('../services/verification');
 
 const app = require('../../server');
 let server;
@@ -738,4 +738,88 @@ test('wallet lookup: suspended agent is not trusted even with a high score', asy
   assert.strictEqual(r.status, 200);
   assert.strictEqual(r.body.status, 'suspended');
   assert.strictEqual(r.body.trusted, false);
+});
+
+// ---------------------------------------------------------------------------
+// Spend receipts — every approved charge carries a verifiable Ed25519 receipt.
+// ---------------------------------------------------------------------------
+test('spend receipts: authorized spend returns a receipt that verifies publicly', async () => {
+  const id = await trustedAgent('rcpt-http', '0x6000000000000000000000000000000000000001');
+  const grant = await req('POST', '/api/agents/' + id + '/permissions', {
+    category: 'compute',
+    ceiling: 100,
+    period: 'day',
+  });
+  const pid = grant.body.permission.id;
+
+  const sp = await req('POST', '/api/permissions/' + pid + '/spends', {
+    amount: 12.5,
+    note: 'gpu hour',
+  });
+  assert.strictEqual(sp.status, 201);
+  assert.ok(sp.body.spend.receipt_signature, 'spend carries a receipt signature');
+
+  // Public receipt endpoint — no auth needed.
+  const rc = await req('GET', '/api/spends/' + sp.body.spend.id + '/receipt');
+  assert.strictEqual(rc.status, 200);
+  const receipt = rc.body.receipt;
+  assert.strictEqual(receipt.signed, true);
+  assert.strictEqual(receipt.verified, true);
+  assert.strictEqual(receipt.algorithm, 'ed25519');
+  assert.strictEqual(receipt.fields.amount, 12.5);
+  assert.strictEqual(receipt.fields.payee, null);
+  assert.ok(receipt.public_key, 'public key included for independent verification');
+
+  // Independent verification with ONLY the public key + canonical + signature.
+  const ok = verifySignature({
+    publicKeyPem: receipt.public_key,
+    canonical: receipt.canonical,
+    signatureB64: receipt.signature,
+  });
+  assert.strictEqual(ok, true, 'receipt verifies without trusting Kairune');
+});
+
+test('spend receipts: named payee is signed into the receipt', async () => {
+  const payer = await trustedAgent('rcpt-payer', '0x6000000000000000000000000000000000000002');
+  const vendor = await trustedAgent('rcpt-vendor', '0x6000000000000000000000000000000000000003');
+  void vendor;
+  const grant = await req('POST', '/api/agents/' + payer + '/permissions', {
+    category: 'compute',
+    ceiling: 100,
+    period: 'day',
+  });
+  const pid = grant.body.permission.id;
+
+  const sp = await req('POST', '/api/permissions/' + pid + '/spends', {
+    amount: 5,
+    counterparty: 'rcpt-vendor',
+  });
+  assert.strictEqual(sp.status, 201);
+  assert.strictEqual(sp.body.spend.payee, 'rcpt-vendor');
+
+  const rc = await req('GET', '/api/spends/' + sp.body.spend.id + '/receipt');
+  assert.strictEqual(rc.body.receipt.fields.payee, 'rcpt-vendor');
+  assert.strictEqual(rc.body.receipt.verified, true);
+});
+
+test('platform-key: exposes the current receipt-signing public key', async () => {
+  const r = await req('GET', '/api/platform-key');
+  assert.strictEqual(r.status, 200);
+  assert.strictEqual(r.body.algorithm, 'ed25519');
+  assert.strictEqual(r.body.purpose, 'receipt');
+  assert.match(r.body.public_key, /-----BEGIN PUBLIC KEY-----/);
+  assert.strictEqual(typeof r.body.ephemeral, 'boolean');
+});
+
+test('receipt: unknown spend → 404', async () => {
+  const r = await req('GET', '/api/spends/does-not-exist/receipt');
+  assert.strictEqual(r.status, 404);
+});
+
+test('meta exposes spend receipt endpoints', async () => {
+  const r = await req('GET', '/api/meta');
+  assert.strictEqual(r.body.spend_receipts, true);
+  assert.strictEqual(r.body.spend_receipt_endpoint, '/api/spends/:sid/receipt');
+  assert.strictEqual(r.body.platform_key_endpoint, '/api/platform-key');
+  assert.ok(Array.isArray(r.body.receipt_signed_fields));
 });

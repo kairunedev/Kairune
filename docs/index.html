@@ -121,6 +121,14 @@ curl https://kairune.online/api/agents/AGENT_ID</pre>
       <p class="docs-note">Charges are checked against the remaining budget in a rolling day | week | month window. Over-budget or revoked → rejected. Under a scoped policy, <code>counterparty_required</code> or <code>counterparty_not_allowed</code> → rejected before any budget math. Past a grant's deadline, <code>permission_expired</code> → rejected first of all.</p>
     </article>
     <article class="docs-card">
+      <h2>Receipts</h2>
+      <ul class="docs-eps">
+        <li><code>GET /spends/:sid/receipt</code> — public, no auth</li>
+        <li><code>GET /platform-key</code> — current receipt-signing public key</li>
+      </ul>
+      <p class="docs-note">Every approved spend is signed with the platform Ed25519 key at charge time — who paid, who was paid, how much, when. The receipt returns the signed fields, the canonical payload, the signature, and the public key, and verifies on the spot. Anyone can prove a charge happened without trusting any database: pin the key from <code>/platform-key</code> out-of-band and check signatures yourself. Spends recorded before receipts existed report <code>signed: false</code>, never an error. SDK: <code>k.getReceipt(spendId)</code>, <code>k.getPlatformKey()</code>.</p>
+    </article>
+    <article class="docs-card">
       <h2>Meta</h2>
       <ul class="docs-eps">
         <li><code>GET /health</code> — service health</li>

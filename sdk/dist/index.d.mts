@@ -123,8 +123,62 @@ interface Spend {
     agent_id: string;
     amount: number;
     note: string | null;
+    /** The payee named on the charge (part of the signed receipt), or null. */
+    payee?: string | null;
     idempotency_key?: string | null;
+    /** Platform Ed25519 signature over the exact charge — the spend's receipt. */
+    receipt_signature?: string | null;
+    /** The platform_keys row that signed the receipt (for key rotation). */
+    receipt_key_id?: string | null;
     created_at: string;
+}
+/**
+ * A publicly verifiable receipt for one approved spend.
+ *
+ * Kairune signs the exact charge fields (who paid, who was paid, how much,
+ * when) with the platform Ed25519 key at authorization time. This object
+ * carries everything an independent verifier needs — the fields, the
+ * canonical payload, the signature, and the public key — plus the result of
+ * verifying the stored signature. A spend recorded before receipts existed
+ * has `signed: false`.
+ */
+interface SpendReceipt {
+    spend_id: string;
+    /** False when the spend predates receipts (or signing failed) — no signature exists. */
+    signed: boolean;
+    /** True when the stored signature verifies against the stored fields right now. */
+    verified: boolean;
+    /** The exact signed fields. */
+    fields: {
+        agent_id: string;
+        amount: number;
+        created_at: string;
+        note: string | null;
+        payee: string | null;
+        permission_id: string;
+        spend_id: string;
+    };
+    /** The canonical (byte-stable) payload that was signed, or null when unsigned. */
+    canonical: string | null;
+    /** Base64 Ed25519 signature, or null when unsigned. */
+    signature: string | null;
+    algorithm: 'ed25519';
+    /** SPKI PEM public key to verify with (pinned to the key that signed). */
+    public_key: string | null;
+    /** The platform_keys row that signed, or null. */
+    key_id: string | null;
+    /** True when the signing key was generated in-process (dev/test), not configured. */
+    ephemeral_key: boolean;
+}
+/** The platform's current receipt-signing public key. */
+interface PlatformKey {
+    algorithm: 'ed25519';
+    purpose: 'receipt';
+    /** SPKI PEM public key — pin this out-of-band to verify receipts independently. */
+    public_key: string;
+    /** True when the key was generated in-process (dev/test), not configured. */
+    ephemeral: boolean;
+    receipt_endpoint: string;
 }
 interface SpendResult {
     approved: true;
@@ -439,6 +493,27 @@ declare class Kairune {
     getBudget(permissionId: string): Promise<Budget>;
     /** Get spend history for a permission. */
     getSpends(permissionId: string, limit?: number): Promise<Spend[]>;
+    /**
+     * Get the public, independently-verifiable receipt for one approved spend.
+     *
+     * Every spend Kairune authorizes is signed with the platform Ed25519 key at
+     * charge time. The receipt carries the signed fields, the canonical payload,
+     * the signature, and the public key — so a payee or third party can prove a
+     * charge happened (who paid whom, how much, when) without trusting any
+     * database. `receipt.verified` is the result of checking the stored
+     * signature against the stored fields right now.
+     */
+    getReceipt(spendId: string): Promise<SpendReceipt>;
+    /**
+     * Get the platform's current receipt-signing public key.
+     *
+     * Pin this out-of-band (docs, pinned post, DNS TXT) so receipt verification
+     * never has to fetch the key from the same server whose receipts it checks.
+     * `ephemeral: true` means the deployment has not configured a production
+     * key (RECEIPT_PRIVATE_KEY) — signatures still verify, but the key is not a
+     * long-lived commitment.
+     */
+    getPlatformKey(): Promise<PlatformKey>;
     /** Register a new agent. */
     registerAgent(input: {
         handle: string;
@@ -619,4 +694,4 @@ declare class Kairune {
     }>;
 }
 
-export { type Agent, type Attestation, type Budget, type CounterpartyCandidate, type CounterpartyCheck, type CounterpartyCheckStatus, type CounterpartyComparison, type CounterpartyPolicy, type CounterpartyReport, type CounterpartyVerdict, type FeedEvent, Kairune, KairuneError, type KairuneOptions, type Meta, type Permission, type PermissionPayee, type Spend, type SpendBlocked, type SpendPreview, type SpendPreviewReason, type SpendResult, type Stats, type WalletProfile, type Webhook, Kairune as default };
+export { type Agent, type Attestation, type Budget, type CounterpartyCandidate, type CounterpartyCheck, type CounterpartyCheckStatus, type CounterpartyComparison, type CounterpartyPolicy, type CounterpartyReport, type CounterpartyVerdict, type FeedEvent, Kairune, KairuneError, type KairuneOptions, type Meta, type Permission, type PermissionPayee, type PlatformKey, type Spend, type SpendBlocked, type SpendPreview, type SpendPreviewReason, type SpendReceipt, type SpendResult, type Stats, type WalletProfile, type Webhook, Kairune as default };

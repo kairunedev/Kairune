@@ -14,6 +14,7 @@ const { getDb } = require('../db');
 const agentService = require('./agentService');
 const webhookService = require('./webhookService');
 const { isExpired, expiresInSeconds } = require('./permissionService');
+const receiptService = require('./receiptService');
 
 function nowIso() {
   return new Date().toISOString();
@@ -626,21 +627,46 @@ async function authorizeSpend(
     agent_id: permission.agent_id,
     amount: value,
     note,
+    // The payee exactly as named on the charge (trimmed); NULL when the spend
+    // did not name one. Part of the signed receipt, so a receipt proves not
+    // just how much moved but WHO it moved to.
+    payee:
+      counterparty == null || String(counterparty).trim() === ''
+        ? null
+        : String(counterparty).trim(),
     idempotency_key: key,
     created_at: opts.nowMs ? new Date(opts.nowMs).toISOString() : nowIso(),
   };
 
+  // Receipt: sign the exact charge fields with the platform key BEFORE the
+  // insert, so the stored row carries its own proof. Best-effort — a signing
+  // failure (e.g. a misconfigured RECEIPT_PRIVATE_KEY) records the spend
+  // without a receipt rather than blocking a legitimate charge.
+  try {
+    const signed = await receiptService.signSpendReceipt(spend);
+    spend.receipt_signature = signed.signature;
+    spend.receipt_key_id = signed.keyId;
+  } catch {
+    spend.receipt_signature = null;
+    spend.receipt_key_id = null;
+  }
+
   try {
     await db.execute({
-      sql: `INSERT INTO spends (id, permission_id, agent_id, amount, note, idempotency_key, created_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?)`,
+      sql: `INSERT INTO spends
+              (id, permission_id, agent_id, amount, note, payee, idempotency_key,
+               receipt_signature, receipt_key_id, created_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       args: [
         spend.id,
         spend.permission_id,
         spend.agent_id,
         spend.amount,
         spend.note,
+        spend.payee,
         spend.idempotency_key,
+        spend.receipt_signature,
+        spend.receipt_key_id,
         spend.created_at,
       ],
     });
@@ -666,10 +692,14 @@ async function authorizeSpend(
     agent_id: permission.agent_id,
     spend_id: spend.id,
     amount: value,
+    payee: spend.payee,
     ceiling,
     used: usedAfter,
     remaining: remaining - value,
     period: permission.period,
+    receipt: spend.receipt_signature
+      ? { signature: spend.receipt_signature, key_id: spend.receipt_key_id }
+      : null,
   });
   await recordEvent('spend.approved', {
     agent_id: permission.agent_id,
@@ -934,6 +964,20 @@ async function budgetSummary(permissionId, opts = {}) {
 }
 
 /**
+ * Fetch a single spend by its id (across all permissions).
+ * @param {string} spendId
+ * @returns {Promise<object|null>}
+ */
+async function getSpendById(spendId) {
+  const db = await getDb();
+  const res = await db.execute({
+    sql: `SELECT * FROM spends WHERE id = ? LIMIT 1`,
+    args: [spendId],
+  });
+  return res.rows[0] || null;
+}
+
+/**
  * List recent spends for a permission (most recent first).
  * @param {string} permissionId
  * @param {{limit?:number}} [opts]
@@ -971,6 +1015,7 @@ module.exports = {
   previewSpend,
   assessSpendCounterparty,
   budgetSummary,
+  getSpendById,
   listSpends,
   listFeed,
   recordEvent,

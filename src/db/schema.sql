@@ -151,19 +151,41 @@ CREATE UNIQUE INDEX IF NOT EXISTS idx_permission_payees_unique
 -- spends: actual charges authorized against a permission (enforces the ceiling)
 -- ---------------------------------------------------------------------------
 CREATE TABLE IF NOT EXISTS spends (
-  id              TEXT PRIMARY KEY,            -- uuid
-  permission_id   TEXT NOT NULL,
-  agent_id        TEXT NOT NULL,
-  amount          REAL NOT NULL,               -- charge value (> 0)
-  note            TEXT,
-  idempotency_key TEXT,                        -- client-supplied dedupe key (optional)
-  created_at      TEXT NOT NULL,
+  id                TEXT PRIMARY KEY,          -- uuid
+  permission_id     TEXT NOT NULL,
+  agent_id          TEXT NOT NULL,
+  amount            REAL NOT NULL,             -- charge value (> 0)
+  note              TEXT,
+  payee             TEXT,                      -- counterparty named on the charge (NULL = none)
+  idempotency_key   TEXT,                      -- client-supplied dedupe key (optional)
+  receipt_signature TEXT,                      -- platform Ed25519 signature over the charge (receipt)
+  receipt_key_id    TEXT,                      -- platform_keys row that signed it
+  created_at        TEXT NOT NULL,
   FOREIGN KEY (permission_id) REFERENCES permissions(id) ON DELETE CASCADE,
   FOREIGN KEY (agent_id) REFERENCES agents(id) ON DELETE CASCADE
 );
 
 CREATE INDEX IF NOT EXISTS idx_spends_permission ON spends(permission_id);
 CREATE INDEX IF NOT EXISTS idx_spends_agent ON spends(agent_id);
+
+-- ---------------------------------------------------------------------------
+-- platform_keys: the public half of Kairune's own signing keys.
+--
+-- Attestations are signed by issuers; receipts are signed by the platform.
+-- This table publishes the platform's current Ed25519 public key so anyone
+-- can independently verify a spend receipt without asking Kairune for it.
+-- `ephemeral` marks keys generated in-process (dev/test) rather than a
+-- configured production key — their signatures verify, but they are not a
+-- long-lived commitment. One row per key fingerprint.
+-- ---------------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS platform_keys (
+  id            TEXT PRIMARY KEY,              -- uuid
+  public_key    TEXT NOT NULL UNIQUE,          -- SPKI PEM (Ed25519)
+  algo          TEXT NOT NULL DEFAULT 'ed25519',
+  purpose       TEXT NOT NULL DEFAULT 'receipt',
+  ephemeral     INTEGER NOT NULL DEFAULT 0,    -- 1 = generated in-process
+  created_at    TEXT NOT NULL
+);
 
 -- NOTE: the partial UNIQUE index that dedupes spends by idempotency_key is
 -- created in code (ensureSpendColumns), not here. It must run AFTER the
