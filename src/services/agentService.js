@@ -511,13 +511,19 @@ async function compareCounterparties(refs, { amount = null, nowMs } = {}) {
   const assessed = [];
   const unresolved = [];
 
-  for (const ref of unique) {
-    const result = await checkCounterparty(ref, { amount, nowMs });
-    if (!result) {
-      unresolved.push(ref);
-      continue;
-    }
-    assessed.push({ ref, result });
+  // Up to MAX_COMPARE_CANDIDATES candidates, each owning one profile read + one
+  // attestation read. No ordering dependency across candidates, so run in
+  // parallel rather than N sequential Turso round-trips.
+  const assessedRows = await Promise.all(
+    unique.map(async (ref) => {
+      const result = await checkCounterparty(ref, { amount, nowMs });
+      if (!result) return { unresolved: ref };
+      return { assessed: { ref, result } };
+    })
+  );
+  for (const row of assessedRows) {
+    if (row.unresolved) unresolved.push(row.unresolved);
+    else assessed.push(row.assessed);
   }
 
   const ranked = assessed
@@ -588,43 +594,29 @@ async function getStats({ includeDemo = false } = {}) {
   // agents so the totals are internally consistent with the agent count.
   const agentIds = `SELECT id FROM agents WHERE 1=1${demoFilter}`;
 
-  const total = (await one(`SELECT COUNT(*) c FROM agents WHERE 1=1${demoFilter}`)).c;
-  const active = (
-    await one(
-      `SELECT COUNT(*) c FROM agents WHERE status = 'active'${demoFilter}`
-    )
-  ).c;
-  const attestations = (
-    await one(
-      `SELECT COUNT(*) c FROM attestations WHERE agent_id IN (${agentIds})`
-    )
-  ).c;
-  const activePerms = (
-    await one(
-      `SELECT COUNT(*) c FROM permissions WHERE status = 'active' AND agent_id IN (${agentIds})`
-    )
-  ).c;
-  const totalSpend = (
-    await one(
-      `SELECT COALESCE(SUM(amount), 0) s FROM spends WHERE permission_id IN (
-         SELECT id FROM permissions WHERE agent_id IN (${agentIds}))`
-    )
-  ).s;
-  const avgScore = (await one(`SELECT AVG(score) a FROM agents WHERE 1=1${demoFilter}`)).a || 0;
-  const tierDist = (
-    await db.execute(
-      `SELECT tier, COUNT(*) c FROM agents WHERE 1=1${demoFilter} GROUP BY tier ORDER BY tier`
-    )
-  ).rows;
+  // Seven independent aggregates — no ordering dependency, so run in parallel
+  // rather than adding a Turso round-trip per row.
+  const [total, active, attestations, activePerms, totalSpend, avgScore, tierDistRaw] = await Promise.all([
+    one(`SELECT COUNT(*) c FROM agents WHERE 1=1${demoFilter}`),
+    one(`SELECT COUNT(*) c FROM agents WHERE status = 'active'${demoFilter}`),
+    one(`SELECT COUNT(*) c FROM attestations WHERE agent_id IN (${agentIds})`),
+    one(`SELECT COUNT(*) c FROM permissions WHERE status = 'active' AND agent_id IN (${agentIds})`),
+    one(`SELECT COALESCE(SUM(amount), 0) s FROM spends WHERE permission_id IN (SELECT id FROM permissions WHERE agent_id IN (${agentIds}))`),
+    one(`SELECT AVG(score) a FROM agents WHERE 1=1${demoFilter}`),
+    db.execute(`SELECT tier, COUNT(*) c FROM agents WHERE 1=1${demoFilter} GROUP BY tier ORDER BY tier`),
+  ]);
+  const c = (r) => Number((r && r.c) || 0);
+  const sum = Number((totalSpend && totalSpend.s) || 0);
+  const avg = Number((avgScore && avgScore.a) || 0);
 
   return {
-    total_agents: Number(total) || 0,
-    active_agents: Number(active) || 0,
-    total_attestations: Number(attestations) || 0,
-    active_permissions: Number(activePerms) || 0,
-    total_spend: Math.round((Number(totalSpend) || 0) * 100) / 100,
-    avg_score: Math.round(Number(avgScore) || 0),
-    tier_distribution: tierDist,
+    total_agents: c(total),
+    active_agents: c(active),
+    total_attestations: c(attestations),
+    active_permissions: c(activePerms),
+    total_spend: Math.round(sum * 100) / 100,
+    avg_score: Math.round(avg),
+    tier_distribution: tierDistRaw.rows,
   };
 }
 
@@ -777,7 +769,8 @@ async function deleteAgent(id) {
 
 /**
  * Remove ephemeral demo agents older than DEMO_TTL_HOURS (default 6).
- * Lazy cleanup — called from read endpoints so serverless doesn't need a cron.
+ * Set-based — deletes child rows via FK cascades (or explicit IN for backfill)
+ * in bulk. No longer walks the result set and deletes one agent per round-trip.
  * @returns {Promise<number>} deleted count
  */
 async function purgeExpiredDemos() {
@@ -785,20 +778,17 @@ async function purgeExpiredDemos() {
   const ttlHours = Number.isFinite(hours) && hours > 0 ? hours : 6;
   const cutoff = new Date(Date.now() - ttlHours * 3600 * 1000).toISOString();
   const db = await getDb();
-  const found = await db.execute({
-    sql: `SELECT id FROM agents WHERE created_at < ?
-            AND (
-              lower(handle) LIKE 'try-%'
-              OR lower(handle) LIKE 'demo-%'
-              OR lower(COALESCE(operator,'')) IN ('demo-loop','demo user')
-            )`,
+  const res = await db.execute({
+    sql: `DELETE FROM agents
+            WHERE created_at < ?
+              AND (
+                lower(handle) LIKE 'try-%'
+                OR lower(handle) LIKE 'demo-%'
+                OR lower(COALESCE(operator,'')) IN ('demo-loop','demo user')
+              )`,
     args: [cutoff],
   });
-  let n = 0;
-  for (const row of found.rows) {
-    if (await deleteAgent(row.id)) n += 1;
-  }
-  return n;
+  return res.rowsAffected || 0;
 }
 
 module.exports = {

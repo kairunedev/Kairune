@@ -79,13 +79,55 @@ function hypothetical(kind, status, issuerId, nowIso) {
 }
 
 /**
+ * Build a scorer that reports the score after appending `count` simulated
+ * events to the real history.
+ *
+ * The history is copied once and the simulated tail is grown in place across
+ * calls, so probing an increasing-then-decreasing sequence of counts (as binary
+ * search does) never re-copies the history. Shrinking is just a length
+ * assignment. Results are memoised because binary search re-probes its final
+ * answer, and `computeScore` is pure over these rows.
+ *
+ * @param {object[]} history real attestation rows
+ * @param {(i:number)=>object} makeEvent factory for the i-th simulated event
+ * @param {number} nowMs fixed clock
+ * @returns {(count:number)=>number} score after `count` simulated events
+ */
+function simulate(history, makeEvent, nowMs) {
+  const working = history.slice();
+  const base = working.length;
+  const cache = new Map();
+
+  return function scoreAfter(count) {
+    const hit = cache.get(count);
+    if (hit !== undefined) return hit;
+
+    // Grow or shrink the simulated tail to exactly `count` events.
+    for (let i = working.length - base; i < count; i++) working.push(makeEvent(i));
+    if (working.length > base + count) working.length = base + count;
+
+    const { score } = computeScore(working, nowMs);
+    cache.set(count, score);
+    return score;
+  };
+}
+
+/**
  * Smallest number of identical hypothetical attestations that moves the score
  * across `target`, found by re-running the real scoring engine.
  *
- * Linear rather than binary search on purpose: each step is cheap, the counts
- * that matter are small, and a linear scan stays obviously correct against a
- * non-linear (log-volume, per-issuer-capped) scoring function without assuming
- * anything about its shape beyond monotonicity in the event count.
+ * Binary rather than linear search. The cost here is entirely in `computeScore`,
+ * which walks the whole history on every call, so a linear scan costs up to
+ * MAX_SIMULATED_EVENTS full rescorings *per kind* — and `GET /agents/:id/next-steps`
+ * is public and exempt from rate limiting (the limiter only covers mutating
+ * methods). Binary search answers the same question in ~log2(400) ≈ 9 rescorings.
+ *
+ * This is sound because the score is monotonically non-decreasing in the count
+ * of identical appended positive events: each added event contributes a
+ * non-negative weighted term and a non-decreasing log-volume bonus, and every
+ * simulated event gets its own issuer so the per-issuer cap never bites. The
+ * search is bracketed by an explicit reachability probe at the cap, so an
+ * unreachable target still returns null rather than a wrong count.
  *
  * @param {object[]} history real attestation rows
  * @param {number} target score to reach
@@ -94,13 +136,20 @@ function hypothetical(kind, status, issuerId, nowIso) {
  * @returns {{count:number, score:number}|null} null when unreachable within MAX_SIMULATED_EVENTS
  */
 function eventsToReach(history, target, makeEvent, nowMs) {
-  const simulated = [];
-  for (let i = 0; i < MAX_SIMULATED_EVENTS; i++) {
-    simulated.push(makeEvent(i));
-    const { score } = computeScore([...history, ...simulated], nowMs);
-    if (score >= target) return { count: simulated.length, score };
+  const base = Array.isArray(history) ? history : [];
+  const search = simulate(base, makeEvent, nowMs);
+
+  // Probe the cap first. If the ceiling cannot reach the target, no count can.
+  if (search(MAX_SIMULATED_EVENTS) < target) return null;
+
+  let lo = 1;
+  let hi = MAX_SIMULATED_EVENTS;
+  while (lo < hi) {
+    const mid = (lo + hi) >> 1;
+    if (search(mid) >= target) hi = mid;
+    else lo = mid + 1;
   }
-  return null;
+  return { count: lo, score: search(lo) };
 }
 
 /**
@@ -118,13 +167,26 @@ function eventsToReach(history, target, makeEvent, nowMs) {
  */
 function eventsToFallBelow(history, floor, kind, nowMs) {
   const nowIso = new Date(nowMs).toISOString();
-  const simulated = [];
-  for (let i = 0; i < MAX_SIMULATED_EVENTS; i++) {
-    simulated.push(hypothetical(kind, 'verified', `${SIM_ISSUER_PREFIX}${i}`, nowIso));
-    const { score } = computeScore([...history, ...simulated], nowMs);
-    if (score < floor) return { count: simulated.length, score };
+  const base = Array.isArray(history) ? history : [];
+  const search = simulate(
+    base,
+    (i) => hypothetical(kind, 'verified', `${SIM_ISSUER_PREFIX}${i}`, nowIso),
+    nowMs
+  );
+
+  // Mirror of eventsToReach with the inequality flipped: negatives only ever
+  // push the score down, so the predicate "score < floor" is likewise monotonic
+  // in the event count.
+  if (search(MAX_SIMULATED_EVENTS) >= floor) return null;
+
+  let lo = 1;
+  let hi = MAX_SIMULATED_EVENTS;
+  while (lo < hi) {
+    const mid = (lo + hi) >> 1;
+    if (search(mid) < floor) hi = mid;
+    else lo = mid + 1;
   }
-  return null;
+  return { count: lo, score: search(lo) };
 }
 
 /**

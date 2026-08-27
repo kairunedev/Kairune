@@ -7,7 +7,7 @@
 <title>Kairune Console — live trust dashboard</title>
 <link rel="icon" href="/assets/img/logo-mark-solid.svg" type="image/svg+xml" />
 <link rel="stylesheet" href="/assets/css/styles.css?v=9" />
-<link rel="stylesheet" href="./console.css?v=7" />
+<link rel="stylesheet" href="./console.css?v=8" />
 </head>
 <body class="console">
 
@@ -42,11 +42,11 @@
 
   <!-- global stats -->
   <section class="stat-grid" id="statGrid" aria-live="polite">
-    <div class="stat"><span class="stat-k">agents</span><b id="stAgents">—</b></div>
-    <div class="stat"><span class="stat-k">attestations</span><b id="stAtt">—</b></div>
-    <div class="stat"><span class="stat-k">active_permissions</span><b id="stPerms">—</b></div>
-    <div class="stat"><span class="stat-k">total_spend</span><b id="stSpend">—</b></div>
-    <div class="stat"><span class="stat-k">avg_score</span><b id="stAvg">—</b></div>
+    <div class="stat"><span class="stat-k">agents</span><b id="stAgents" class="skeleton sk-stat" aria-busy="true">—</b></div>
+    <div class="stat"><span class="stat-k">attestations</span><b id="stAtt" class="skeleton sk-stat" aria-busy="true">—</b></div>
+    <div class="stat"><span class="stat-k">active_permissions</span><b id="stPerms" class="skeleton sk-stat" aria-busy="true">—</b></div>
+    <div class="stat"><span class="stat-k">total_spend</span><b id="stSpend" class="skeleton sk-stat" aria-busy="true">—</b></div>
+    <div class="stat"><span class="stat-k">avg_score</span><b id="stAvg" class="skeleton sk-stat" aria-busy="true">—</b></div>
   </section>
 
   <section class="holder-strip panel" aria-label="Holder wallet">
@@ -137,6 +137,6 @@
 
 <div class="toast" id="toast" hidden></div>
 
-<script src="./console.js?v=7" defer></script>
+<script src="./console.js?v=8" defer></script>
 </body>
 </html>

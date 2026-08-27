@@ -44,6 +44,7 @@ CREATE TABLE IF NOT EXISTS attestations (
 
 CREATE INDEX IF NOT EXISTS idx_attestations_agent ON attestations(agent_id);
 CREATE INDEX IF NOT EXISTS idx_attestations_kind  ON attestations(kind);
+CREATE INDEX IF NOT EXISTS idx_attestations_agent_created ON attestations(agent_id, created_at DESC);
 
 -- ---------------------------------------------------------------------------
 -- issuers: registered parties allowed to submit verifiable (signed) attestations
@@ -165,7 +166,10 @@ CREATE TABLE IF NOT EXISTS spends (
   FOREIGN KEY (agent_id) REFERENCES agents(id) ON DELETE CASCADE
 );
 
-CREATE INDEX IF NOT EXISTS idx_spends_permission ON spends(permission_id);
+-- Covers both the fast path usedInWindow(SUM WHERE permission_id = ? AND
+-- created_at >= ?) and the permission-scoped audit feed (WHERE + ORDER BY
+-- created_at DESC). This supersedes the old single-column permission index.
+CREATE INDEX IF NOT EXISTS idx_spends_permission_created ON spends(permission_id, created_at DESC);
 CREATE INDEX IF NOT EXISTS idx_spends_agent ON spends(agent_id);
 
 -- ---------------------------------------------------------------------------
@@ -271,3 +275,41 @@ CREATE TABLE IF NOT EXISTS issuer_requests (
 CREATE INDEX IF NOT EXISTS idx_issuer_requests_agent ON issuer_requests(agent_id);
 CREATE INDEX IF NOT EXISTS idx_issuer_requests_issuer ON issuer_requests(issuer_id);
 CREATE INDEX IF NOT EXISTS idx_issuer_requests_status ON issuer_requests(status);
+
+-- ---------------------------------------------------------------------------
+-- wallet_challenges: single-use nonces for EIP-191 wallet proof
+--
+-- Short-lived by design. Rows are deleted on the first verification attempt
+-- whether it passes or fails, so a live challenge can never be ground against.
+-- Anything left behind is an abandoned attempt and is swept lazily.
+-- ---------------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS wallet_challenges (
+  nonce         TEXT PRIMARY KEY,              -- 32 hex chars, single use
+  agent_id      TEXT NOT NULL,
+  wallet        TEXT NOT NULL,                 -- claimed address, lower-cased
+  message       TEXT NOT NULL,                 -- exact text the wallet must sign
+  created_at    TEXT NOT NULL,
+  expires_at    TEXT NOT NULL,
+  FOREIGN KEY (agent_id) REFERENCES agents(id) ON DELETE CASCADE
+);
+
+CREATE INDEX IF NOT EXISTS idx_wallet_challenges_agent ON wallet_challenges(agent_id, wallet);
+CREATE INDEX IF NOT EXISTS idx_wallet_challenges_expires ON wallet_challenges(expires_at);
+
+-- ---------------------------------------------------------------------------
+-- wallet_proofs: proven control of a Robinhood Chain address
+--
+-- Keyed on the (agent, wallet) PAIR, not the agent. An agent that proves one
+-- wallet and later moves to another must read as unproven for the new one, so
+-- the proof can never outlive the address it was made about.
+-- ---------------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS wallet_proofs (
+  agent_id      TEXT NOT NULL,
+  wallet        TEXT NOT NULL,                 -- recovered signer, lower-cased
+  chain_id      INTEGER NOT NULL DEFAULT 4663, -- Robinhood Chain
+  verified_at   TEXT NOT NULL,
+  PRIMARY KEY (agent_id, wallet),
+  FOREIGN KEY (agent_id) REFERENCES agents(id) ON DELETE CASCADE
+);
+
+CREATE INDEX IF NOT EXISTS idx_wallet_proofs_wallet ON wallet_proofs(wallet);

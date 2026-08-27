@@ -143,10 +143,45 @@ npm run dev
 | GET    | `/api/agents/:id/attestations`    | Attestation history                  |
 | POST   | `/api/agents/:id/attestations`    | Add attestation (triggers rescore)   |
 | GET    | `/api/agents/:id/permissions`     | List permissions                     |
-| POST   | `/api/agents/:id/permissions`     | Grant permission (capped by tier)    |
+| POST   | `/api/agents/:id/permissions`     | Grant permission (self-serve; refused below tier 1) |
 | POST   | `/api/permissions/:pid/revoke`    | Revoke permission (instant)          |
+| GET    | `/api/permissions/:pid/spends`    | Spend history (filterable)           |
+| GET    | `/api/agents/:id/spends`          | Spend history across every permission |
+| GET    | `/api/agents/:id/spend-summary`   | Spend totals by permission / category / payee |
 | GET    | `/api/spends/:sid/receipt`        | Public signed receipt for a spend    |
 | GET    | `/api/platform-key`               | Current receipt-signing public key   |
+
+Both spend-history endpoints accept `since`, `until`, `payee` and `idempotency_key`
+filters plus `limit`/`offset`. `until` is exclusive so consecutive windows tile
+without double-counting, and an unparseable date is a `400` rather than a filter
+that silently matches everything. Summary totals cover the requested window, not
+each grant's rolling ceiling window — use `/api/permissions/:pid/budget` for
+remaining headroom.
+
+### Authorisation model
+
+Granting a budget, spending against it, scoping payees, setting expiry and
+revoking are **self-serve** — no platform key. The trust tier is the access
+control: an agent below EMERGING (score 250) is refused a permission with
+`409 tier_too_low`, because there is no behavioural basis to extend it credit
+yet. An agent earns its budget rather than being handed one.
+
+The admin key covers platform-operator surface only: issuer registration,
+webhook management, agent status/delete, and the cross-permission spend
+reports. It is fail-closed — if `ADMIN_KEY` is unset in production those
+routes return `503` rather than opening up.
+
+### Wallet proof (`/api`)
+| Method | Path                              | Description                          |
+| ------ | --------------------------------- | ------------------------------------ |
+| POST   | `/api/agents/:id/wallet-proof/challenge` | Issue a signing challenge (600s TTL) |
+| POST   | `/api/agents/:id/wallet-proof`    | Submit an EIP-191 `personal_sign` signature |
+| GET    | `/api/agents/:id/wallet-proof`    | Proof status (public read)            |
+
+An agent proves it controls the wallet it claims by signing a server-issued
+challenge with `personal_sign` (chain `4663`, domain `kairune.online`). The
+private key never leaves the wallet. This proves **wallet control only** — it
+is not a claim about the trust score, which is earned from attestations.
 
 ### Issuers — verifiable attestations (`/api`)
 | Method | Path                              | Auth            | Description                          |

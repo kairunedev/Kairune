@@ -85,6 +85,21 @@ function svgToPng(svg) {
   }).render().asPng();
 }
 
+// HTML shells for client apps — lazy-read once so requiring this module at test
+// time does not touch disk, and request-time reads don't block per hit.
+let _AGENT_HTML = null;
+let _LB_HTML = null;
+function readAgentHtml() {
+  if (_AGENT_HTML != null) return _AGENT_HTML;
+  try { _AGENT_HTML = fs.readFileSync(path.join(PUBLIC_DIR, 'a', 'index.html'), 'utf8'); } catch (_) { _AGENT_HTML = ''; }
+  return _AGENT_HTML;
+}
+function readLeaderboardHtml() {
+  if (_LB_HTML != null) return _LB_HTML;
+  try { _LB_HTML = fs.readFileSync(path.join(PUBLIC_DIR, 'leaderboard', 'index.html'), 'utf8'); } catch (_) { _LB_HTML = ''; }
+  return _LB_HTML;
+}
+
 // Behind a reverse proxy (nginx / load balancer) → trust X-Forwarded-* headers.
 app.set('trust proxy', 1);
 app.disable('x-powered-by');
@@ -108,54 +123,55 @@ app.use((req, res, next) => {
 });
 
 // Health-check for PM2 / deploy script / uptime monitor.
+// The default is cheap (status + uptime only) so frequent probes don't burn
+// CPU. Append ?diag=1 to include a bounded Resvg font-render self-test for
+// deploy verification and debugging image regressions.
+// eslint-disable-next-line no-unused-vars
 app.get('/health', (req, res) => {
-  // Font render self-test: rasterize a tiny black-on-white text SVG and count
-  // how many pixels are non-white. If fonts render, we get many dark pixels;
-  // if they don't (blank text), the canvas stays white → count ~0.
-  let renderTest = null;
-  try {
-    const testSvg =
-      '<svg xmlns="http://www.w3.org/2000/svg" width="200" height="60">' +
-      '<rect width="200" height="60" fill="#ffffff"/>' +
-      '<text x="10" y="40" font-size="32" font-family="DejaVu Sans" fill="#000000">RENDER</text>' +
-      '</svg>';
-    const png = new Resvg(testSvg, {
-      font: {
-        loadSystemFonts: false,
-        fontBuffers: FONT_BUFFERS,
-        defaultFontFamily: 'DejaVu Sans',
+  if (req.query.diag === '1' || req.query.full === '1') {
+    let renderTest = null;
+    try {
+      const testSvg =
+        '<svg xmlns="http://www.w3.org/2000/svg" width="200" height="60">' +
+        '<rect width="200" height="60" fill="#ffffff"/>' +
+        '<text x="10" y="40" font-size="32" font-family="DejaVu Sans" fill="#000000">RENDER</text>' +
+        '</svg>';
+      const png = new Resvg(testSvg, {
+        font: {
+          loadSystemFonts: false,
+          fontBuffers: FONT_BUFFERS,
+          defaultFontFamily: 'DejaVu Sans',
+        },
+      })
+        .render()
+        .asPng();
+      renderTest = {
+        resvgVersion: require('@resvg/resvg-js/package.json').version,
+        bufferPngBytes: png.length,
+      };
+    } catch (err) {
+      renderTest = { error: String(err && err.message) };
+    }
+    return res.status(200).json({
+      status: 'ok',
+      service: 'kairune',
+      uptime: process.uptime(),
+      timestamp: new Date().toISOString(),
+      fonts: {
+        count: FONT_BUFFERS.length,
+        bytes: FONT_BUFFERS.reduce((a, b) => a + b.length, 0),
+        firstBytes: FONT_BUFFERS[0]
+          ? FONT_BUFFERS[0].slice(0, 4).toString('hex')
+          : null,
       },
-    })
-      .render()
-      .asPng();
-    // Also try WITHOUT explicit fontBuffers to compare (loadSystemFonts true).
-    const pngSys = new Resvg(testSvg, {
-      font: { loadSystemFonts: true, defaultFontFamily: 'sans-serif' },
-    })
-      .render()
-      .asPng();
-    renderTest = {
-      resvgVersion: require('@resvg/resvg-js/package.json').version,
-      bufferPngBytes: png.length,
-      systemPngBytes: pngSys.length,
-    };
-  } catch (err) {
-    renderTest = { error: String(err && err.message) };
+      renderTest,
+    });
   }
-
   res.status(200).json({
     status: 'ok',
     service: 'kairune',
     uptime: process.uptime(),
     timestamp: new Date().toISOString(),
-    fonts: {
-      count: FONT_BUFFERS.length,
-      bytes: FONT_BUFFERS.reduce((a, b) => a + b.length, 0),
-      firstBytes: FONT_BUFFERS[0]
-        ? FONT_BUFFERS[0].slice(0, 4).toString('hex')
-        : null,
-    },
-    renderTest,
   });
 });
 
@@ -232,7 +248,7 @@ app.get('/leaderboard/card.png', async (req, res, next) => {
 // Public leaderboard page (SSR meta for rich unfurls).
 app.get('/leaderboard', async (req, res, next) => {
   try {
-    let html = fs.readFileSync(path.join(PUBLIC_DIR, 'leaderboard', 'index.html'), 'utf8');
+    let html = readLeaderboardHtml();
     const title = 'Most trusted AI agents — Kairune leaderboard';
     const desc = 'A live ranking of autonomous agents by verifiable trust score. The trust layer for agents that spend.';
     const cardImg = 'https://kairune.online/leaderboard/card.png';
@@ -272,11 +288,11 @@ app.get('/a/:handle/card.svg', async (req, res, next) => {
         )
       );
     }
-    const agent = await agentService.recalcAgent(base.id);
-    const atts = await attestationService.listAttestations(base.id, { limit: 200 });
-    const label = agent.label || trustScore.TIER_LABELS[agent.tier] || 'UNRATED';
+    // Scores are rederived on writes (attestation/spend), so the stored row is
+    // already trusted — no need to rewrite it on every hotlinked image hit.
+    const label = trustScore.labelFor(base.score) || 'UNRATED';
     const svg = renderCardSvg(
-      { ...agent, label },
+      { ...base, label, suggested_daily_ceiling: trustScore.suggestedDailyCeiling(base.score) },
       { attestations: (atts || []).length }
     );
     res.setHeader('Cache-Control', 'public, max-age=300, s-maxage=300');
@@ -299,11 +315,10 @@ app.get('/a/:handle/card.png', async (req, res, next) => {
       res.setHeader('Cache-Control', 'no-cache');
       return res.type('image/png').send(svgToPng(svg));
     }
-    const agent = await agentService.recalcAgent(base.id);
     const atts = await attestationService.listAttestations(base.id, { limit: 200 });
-    const label = agent.label || trustScore.TIER_LABELS[agent.tier] || 'UNRATED';
+    const label = trustScore.labelFor(base.score) || 'UNRATED';
     const svg = renderCardSvg(
-      { ...agent, label },
+      { ...base, label },
       { attestations: (atts || []).length }
     );
     res.setHeader('Cache-Control', 'public, max-age=300, s-maxage=300');
@@ -324,9 +339,8 @@ app.get('/a/:handle/badge.svg', async (req, res, next) => {
       svg = renderBadgeSvg({ handle, score: 0, tier: 0, label: 'UNRATED' });
       res.setHeader('Cache-Control', 'no-cache');
     } else {
-      const agent = await agentService.recalcAgent(base.id);
-      const label = agent.label || trustScore.TIER_LABELS[agent.tier] || 'UNRATED';
-      svg = renderBadgeSvg({ ...agent, label });
+      const label = trustScore.labelFor(base.score) || 'UNRATED';
+      svg = renderBadgeSvg({ ...base, label });
       res.setHeader('Cache-Control', 'public, max-age=300, s-maxage=300');
     }
     res.setHeader('Access-Control-Allow-Origin', '*');
@@ -369,18 +383,18 @@ app.get('/a/:handle/rank.svg', async (req, res, next) => {
 app.get('/a/:handle', async (req, res, next) => {
   if (req.params.handle.includes('.')) return next();
   try {
-    let html = fs.readFileSync(path.join(PUBLIC_DIR, 'a', 'index.html'), 'utf8');
+    let html = readAgentHtml();
     const handle = String(req.params.handle).trim().toLowerCase();
     const base = await agentService.getAgent(handle);
     let title = 'Kairune — agent trust card';
     let desc = 'Verifiable trust score for AI agents that spend.';
     if (base) {
-      const agent = await agentService.recalcAgent(base.id);
       const atts = await attestationService.listAttestations(base.id, { limit: 50 });
-      const label = agent.label || trustScore.TIER_LABELS[agent.tier] || 'UNRATED';
-      title = `${agent.handle} · score ${agent.score} (${label}) — Kairune`;
-      desc = `Trust mark for ${agent.handle}: score ${agent.score}/1000, tier ${label}, suggested ceiling $${agent.suggested_daily_ceiling || 0}/day.`;
-      const cardImg = `https://kairune.online/a/${encodeURIComponent(agent.handle)}/card.png`;
+      const label = trustScore.labelFor(base.score) || 'UNRATED';
+      const snap = { ...base, label, suggested_daily_ceiling: trustScore.suggestedDailyCeiling(base.score) };
+      title = `${snap.handle} · score ${snap.score} (${label}) — Kairune`;
+      desc = `Trust mark for ${snap.handle}: score ${snap.score}/1000, tier ${label}, suggested ceiling $${snap.suggested_daily_ceiling || 0}/day.`;
+      const cardImg = `https://kairune.online/a/${encodeURIComponent(snap.handle)}/card.png`;
       html = html
         .replace(/<title>[^<]*<\/title>/, `<title>${escapeHtml(title)}</title>`)
         .replace(
@@ -388,7 +402,7 @@ app.get('/a/:handle', async (req, res, next) => {
           [
             `<meta property="og:title" content="${escapeHtml(title)}" />`,
             `<meta property="og:description" content="${escapeHtml(desc)}" />`,
-            `<meta property="og:url" content="https://kairune.online/a/${encodeURIComponent(agent.handle)}" />`,
+            `<meta property="og:url" content="https://kairune.online/a/${encodeURIComponent(snap.handle)}" />`,
             `<meta property="og:type" content="website" />`,
             `<meta property="og:image" content="${escapeHtml(cardImg)}" />`,
             `<meta property="og:image:width" content="1200" />`,
@@ -405,7 +419,7 @@ app.get('/a/:handle', async (req, res, next) => {
       html = html.replace(
         '<!--BOOT_JSON-->',
         `<script>window.__KAIRUNE_SHARE__=${JSON.stringify({
-          agent,
+          agent: snap,
           attestations: atts,
         }).replace(/</g, '\\u003c')};</script>`
       );
@@ -490,7 +504,7 @@ app.use((err, req, res, next) => {
     );
   }
   if (req.path.startsWith('/api')) {
-    const body = { error: err.message || 'Internal Server Error' };
+    const body = { error: status >= 500 ? 'Internal Server Error' : (err.message || 'Bad Request') };
     // Surface structured rejection details (e.g. remaining budget / velocity
     // headroom on a blocked spend) so clients — and the SDK's SpendBlocked
     // type — can branch on them. Only ever set for client (4xx) errors.
@@ -500,7 +514,7 @@ app.use((err, req, res, next) => {
   res
     .status(status)
     .type('text/plain')
-    .send(`${status} — ${err.message || 'Internal Server Error'}`);
+    .send(status >= 500 ? 'Internal Server Error' : `${status} — ${err.message || 'Internal Server Error'}`);
 });
 
 // Only start the listener when run directly (not when required by a test).

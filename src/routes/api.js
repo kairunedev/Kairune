@@ -13,6 +13,8 @@
  *   GET    /api/agents/:id/rank/neighbors     agents ranked just above & below
  *   GET    /api/agents/:id/tier               tier progress + points to next tier
  *   GET    /api/agents/:id/next-steps         simulated route to the next tier + downgrade risk
+ *   GET    /api/agents/:id/spends             merged spend history across all of the agent's permissions
+ *   GET    /api/agents/:id/spend-summary      aggregated spend totals by permission / category / payee
  *   POST   /api/counterparty/check           pre-flight go/no-go before paying another agent
  *   POST   /api/counterparty/compare         rank competing counterparties, pick a winner
  *   PATCH  /api/agents/:id/status             suspend / activate an agent
@@ -24,11 +26,16 @@
  *   POST   /api/permissions/:pid/revoke       revoke permission
  *   POST   /api/permissions/:pid/expiry        set / extend / clear the expiry deadline
  *   GET    /api/permissions/:pid/budget        remaining spend budget
- *   GET    /api/permissions/:pid/spends        spend history
+ *   GET    /api/permissions/:pid/spends        spend history (filter: since/until/payee/idempotency_key)
  *   POST   /api/permissions/:pid/spends/preview dry-run a spend (no charge, go/no-go)
  *   POST   /api/permissions/:pid/spends        authorize a spend (enforces ceiling)
  *   GET    /api/spends/:sid/receipt            public, independently-verifiable spend receipt
  *   GET    /api/platform-key                   the platform's current receipt-signing public key
+ *   POST   /api/issuer-requests                create an issuer verification request
+ *   GET    /api/agents/:id/requests            list an agent's requests
+ *   GET    /api/issuer-requests/:id            fetch a single request
+ *   GET    /api/issuers/:id/requests           list requests for the authenticated issuer
+ *   POST   /api/issuer-requests/:id/respond    accept or reject a request (issuer-only)
  *   POST   /api/webhooks                        register a spend-event webhook
  *   GET    /api/webhooks                        list webhooks
  *   GET    /api/webhooks/:id/deliveries         webhook delivery log
@@ -52,6 +59,7 @@ const receiptService = require('../services/receiptService');
 const replayGuard = require('../services/replayGuard');
 const trustScore = require('../services/trustScore');
 const issuerDiversity = require('../services/issuerDiversity');
+const walletProof = require('../services/walletProof');
 const { rateLimit } = require('../middleware/rateLimit');
 const { requireIssuer } = require('../middleware/issuerAuth');
 const {
@@ -83,6 +91,21 @@ function requireFields(body, fields) {
     err.status = 400;
     throw err;
   }
+}
+
+// Clamp a ?limit= into [1, max]. The lower bound matters: SQLite reads a
+// negative LIMIT as "no limit", so Math.min(-1, 200) would hand back the whole
+// table. Non-numeric input falls back to the route's default.
+function pageLimit(raw, fallback, max) {
+  const n = parseInt(raw, 10);
+  if (!Number.isFinite(n)) return fallback;
+  return Math.max(1, Math.min(n, max));
+}
+
+// Offsets are floored at 0 for the same reason — a negative OFFSET is an error.
+function pageOffset(raw) {
+  const n = parseInt(raw, 10);
+  return Number.isFinite(n) && n > 0 ? n : 0;
 }
 
 // ---------------------------------------------------------------------------
@@ -123,6 +146,11 @@ router.get('/meta', (req, res) => {
     rank_badge_endpoint: '/a/:handle/rank.svg',
     wallet_lookup_endpoint: '/api/wallets/:wallet',
     spend_preview_endpoint: '/api/permissions/:pid/spends/preview',
+    spend_reporting: true,
+    agent_spends_endpoint: '/api/agents/:id/spends',
+    spend_summary_endpoint: '/api/agents/:id/spend-summary',
+    spend_history_filters: ['since', 'until', 'payee', 'idempotency_key'],
+    max_spend_page: spendService.MAX_SPEND_PAGE,
     spend_receipts: true,
     spend_receipt_endpoint: '/api/spends/:sid/receipt',
     platform_key_endpoint: '/api/platform-key',
@@ -135,6 +163,13 @@ router.get('/meta', (req, res) => {
     webhook_events: webhookService.EVENTS,
     chain: ROBINHOOD_CHAIN_NAME,
     chain_id: ROBINHOOD_CHAIN_ID,
+    // Wallet proof — an agent can prove on-chain control of its address, so a
+    // payer can tell a claimed wallet from a demonstrated one.
+    wallet_proof: true,
+    wallet_proof_method: 'eip191-personal-sign',
+    wallet_proof_challenge_endpoint: '/api/agents/:id/wallet-proof/challenge',
+    wallet_proof_endpoint: '/api/agents/:id/wallet-proof',
+    wallet_proof_ttl_s: walletProof.CHALLENGE_TTL_S,
   });
 });
 
@@ -199,7 +234,11 @@ router.get('/token', (req, res) => {
 router.get(
   '/stats',
   wrap(async (req, res) => {
-    await agentService.purgeExpiredDemos().catch(() => 0);
+    // Lazy GC of ephemeral demo agents. Best-effort and off the critical path
+    // so the caller never pays its latency. A request-response that carries
+    // garbage collection also makes the faster machine pay for the slower one's
+    // demo.
+    agentService.purgeExpiredDemos().catch(() => {});
     // Apply the SAME demo/test exclusion the leaderboard uses so public stats
     // match what visitors actually see. include_demo=1 counts everything.
     const includeDemo =
@@ -213,7 +252,7 @@ router.get(
 router.get(
   '/feed',
   wrap(async (req, res) => {
-    const limit = Math.min(parseInt(req.query.limit, 10) || 20, 100);
+    const limit = pageLimit(req.query.limit, 20, 100);
     res.json({ events: await spendService.listFeed({ limit }) });
   })
 );
@@ -224,9 +263,9 @@ router.get(
 router.get(
   '/agents',
   wrap(async (req, res) => {
-    await agentService.purgeExpiredDemos().catch(() => 0);
-    const limit = Math.min(parseInt(req.query.limit, 10) || 50, 200);
-    const offset = parseInt(req.query.offset, 10) || 0;
+    agentService.purgeExpiredDemos().catch(() => {});
+    const limit = pageLimit(req.query.limit, 50, 200);
+    const offset = pageOffset(req.query.offset);
     const status = req.query.status;
     const includeDemo =
       req.query.include_demo === '1' || req.query.include_demo === 'true';
@@ -539,6 +578,134 @@ router.get(
   })
 );
 
+// ---------------------------------------------------------------------------
+// Agent-level spend reporting
+//
+// Per-permission history answers "what did this grant pay for". An operator
+// running several grants on one agent could not answer "what did this agent
+// spend this month" without walking every permission client-side. These two
+// endpoints close that gap: a merged history and an aggregated rollup.
+//
+// Admin-gated like the spend write path — a grant's charge history is operator
+// data, unlike the anonymised public /api/feed.
+// ---------------------------------------------------------------------------
+router.get(
+  '/agents/:id/spends',
+  wrap(async (req, res) => {
+    requireAdmin(req);
+    const agent = await agentService.getAgent(req.params.id);
+    if (!agent) {
+      const err = new Error('Agent not found');
+      err.status = 404;
+      throw err;
+    }
+    const filters = {
+      limit: req.query.limit,
+      offset: req.query.offset,
+      since: req.query.since,
+      until: req.query.until,
+      payee: req.query.payee,
+      idempotencyKey: req.query.idempotency_key,
+      permissionId: req.query.permission_id,
+    };
+    const spends = await spendService.listAgentSpends(agent.id, filters);
+    res.json({
+      agent_id: agent.id,
+      handle: agent.handle,
+      spends,
+      paging: {
+        limit: spendService.clampLimit(filters.limit),
+        offset: spendService.clampOffset(filters.offset),
+        returned: spends.length,
+      },
+    });
+  })
+);
+
+// Aggregated spend rollup: total plus breakdowns by permission, category and
+// payee over an optional [since, until) window. Totals are computed over the
+// requested window, not each permission's rolling ceiling window — use
+// GET /api/permissions/:pid/budget for remaining headroom.
+router.get(
+  '/agents/:id/spend-summary',
+  wrap(async (req, res) => {
+    requireAdmin(req);
+    const agent = await agentService.getAgent(req.params.id);
+    if (!agent) {
+      const err = new Error('Agent not found');
+      err.status = 404;
+      throw err;
+    }
+    const summary = await spendService.spendSummary(agent.id, {
+      since: req.query.since,
+      until: req.query.until,
+      payee: req.query.payee,
+      topPayees: req.query.top_payees,
+    });
+    res.json({ summary: { ...summary, handle: agent.handle } });
+  })
+);
+
+// Wallet proof — challenge / response.
+//
+// Every agent claims a wallet at registration, and until now that claim was
+// only ever checked for *shape*. These two routes let an operator prove
+// *control* with a standard EIP-191 `personal_sign`, which every EVM wallet
+// already implements — so no new tooling, and no private key ever reaches us.
+//
+// Both are public on purpose. Minting a challenge grants nothing (it is a nonce
+// and a sentence), and submitting a signature is self-authenticating: only the
+// wallet holder can produce one that recovers to the claimed address. Requiring
+// an admin key here would mean only Kairune operators could prove wallets,
+// which defeats the point.
+router.post(
+  '/agents/:id/wallet-proof/challenge',
+  wrap(async (req, res) => {
+    const agent = await agentService.getAgent(req.params.id);
+    if (!agent) {
+      const err = new Error('Agent not found');
+      err.status = 404;
+      throw err;
+    }
+    // Always challenge the wallet actually on record. Letting the caller name
+    // the target would allow minting challenges for arbitrary addresses.
+    const challenge = await walletProof.createChallenge(agent.id, agent.wallet);
+    res.status(201).json({ handle: agent.handle, ...challenge });
+  })
+);
+
+router.post(
+  '/agents/:id/wallet-proof',
+  wrap(async (req, res) => {
+    requireFields(req.body, ['nonce', 'signature']);
+    const agent = await agentService.getAgent(req.params.id);
+    if (!agent) {
+      const err = new Error('Agent not found');
+      err.status = 404;
+      throw err;
+    }
+    const result = await walletProof.verifyProof(agent.id, req.body.nonce, req.body.signature);
+    res.json({ proven: true, handle: agent.handle, ...result });
+  })
+);
+
+// Proof status — public read. A payer deciding whether to release funds wants
+// to know whether the address it is about to pay was ever proven, and that
+// answer is not a secret.
+router.get(
+  '/agents/:id/wallet-proof',
+  wrap(async (req, res) => {
+    const agent = await agentService.getAgent(req.params.id);
+    if (!agent) {
+      const err = new Error('Agent not found');
+      err.status = 404;
+      throw err;
+    }
+    const status = await walletProof.proofStatus(agent.id, agent.wallet);
+    res.json({ agent_id: agent.id, handle: agent.handle, ...status });
+  })
+);
+
 // Wallet trust lookup — resolve a Robinhood Chain wallet address to its live
 // trust profile. Built for payment rails / spend gateways that only know the
 // wallet (not the internal id/handle) and need a fast go / no-go signal before
@@ -570,7 +737,12 @@ router.get(
       });
     }
 
-    const agent = await agentService.recalcAgent(base.id);
+    // Recompute and read the proof concurrently — independent reads, and this
+    // route is the hot path for payment gateways.
+    const [agent, proof] = await Promise.all([
+      agentService.recalcAgent(base.id),
+      walletProof.proofStatus(base.id, wallet),
+    ]);
     const { tier, label } = trustScore.tierForScore(agent.score);
 
     res.json({
@@ -586,6 +758,12 @@ router.get(
       tier_label: label,
       max_score: trustScore.MAX_SCORE,
       suggested_daily_ceiling: trustScore.suggestedDailyCeiling(agent.score),
+      // Whether anyone ever proved control of this address. Reported separately
+      // from `trusted` rather than folded into it: an unproven wallet with a
+      // real history is a different risk from a proven wallet with none, and
+      // collapsing the two would hide which one the caller is looking at.
+      wallet_proven: proof.proven,
+      wallet_proven_at: proof.verified_at,
       // A suspended agent should never be trusted to spend, regardless of score.
       trusted: agent.status === 'active' && tier >= 1,
       updated_at: agent.updated_at,
@@ -596,6 +774,9 @@ router.get(
 router.patch(
   '/agents/:id/status',
   wrap(async (req, res) => {
+    // Suspending an agent stops it spending; un-suspending undoes a moderator's
+    // decision. Both are operator actions, same as DELETE below.
+    requireAdmin(req);
     requireFields(req.body, ['status']);
     if (!['active', 'suspended'].includes(req.body.status)) {
       const err = new Error('Status must be "active" or "suspended"');
@@ -643,7 +824,7 @@ router.get(
     }
     res.json({
       attestations: await attestationService.listAttestations(agent.id, {
-        limit: Math.min(parseInt(req.query.limit, 10) || 50, 200),
+        limit: pageLimit(req.query.limit, 50, 200),
       }),
     });
   })
@@ -785,7 +966,6 @@ router.get(
 router.post(
   '/agents/:id/permissions',
   wrap(async (req, res) => {
-    requireAdmin(req);
     requireFields(req.body, ['category', 'ceiling']);
     const agent = await agentService.getAgent(req.params.id);
     if (!agent) {
@@ -812,7 +992,6 @@ router.post(
 router.post(
   '/permissions/:pid/revoke',
   wrap(async (req, res) => {
-    requireAdmin(req);
     const permission = await permissionService.revokePermission(req.params.pid);
     if (!permission) {
       const err = new Error('Active permission not found');
@@ -851,7 +1030,6 @@ router.get(
 router.post(
   '/permissions/:pid/payees',
   wrap(async (req, res) => {
-    requireAdmin(req);
     requireFields(req.body, ['counterparty']);
     const payee = await permissionService.addPayee(req.params.pid, req.body.counterparty, {
       label: req.body.label,
@@ -863,7 +1041,6 @@ router.post(
 router.delete(
   '/permissions/:pid/payees/:ref',
   wrap(async (req, res) => {
-    requireAdmin(req);
     const removed = await permissionService.removePayee(req.params.pid, req.params.ref);
     if (!removed) {
       const err = new Error('Payee not found on this allowlist');
@@ -880,7 +1057,6 @@ router.delete(
 router.post(
   '/permissions/:pid/expiry',
   wrap(async (req, res) => {
-    requireAdmin(req);
     const body = req.body || {};
     const permission = await permissionService.setExpiry(req.params.pid, {
       expires_in_s: body.expires_in_s,
@@ -895,7 +1071,6 @@ router.post(
 router.post(
   '/permissions/:pid/counterparty-policy',
   wrap(async (req, res) => {
-    requireAdmin(req);
     requireFields(req.body, ['counterparty_policy']);
     const permission = await permissionService.setCounterpartyPolicy(
       req.params.pid,
@@ -922,6 +1097,10 @@ router.get(
   })
 );
 
+// Spend history for one permission. Supports paging (`limit`/`offset`) and
+// filters on `since`/`until` (ISO date or timestamp), `payee`, and
+// `idempotency_key` — so "did that retry actually land?" and "have I paid this
+// vendor before?" are one request instead of a client-side scan.
 router.get(
   '/permissions/:pid/spends',
   wrap(async (req, res) => {
@@ -931,10 +1110,22 @@ router.get(
       err.status = 404;
       throw err;
     }
+    const filters = {
+      limit: req.query.limit,
+      offset: req.query.offset,
+      since: req.query.since,
+      until: req.query.until,
+      payee: req.query.payee,
+      idempotencyKey: req.query.idempotency_key,
+    };
+    const spends = await spendService.listSpends(req.params.pid, filters);
     res.json({
-      spends: await spendService.listSpends(req.params.pid, {
-        limit: parseInt(req.query.limit, 10) || 50,
-      }),
+      spends,
+      paging: {
+        limit: spendService.clampLimit(filters.limit),
+        offset: spendService.clampOffset(filters.offset),
+        returned: spends.length,
+      },
     });
   })
 );
@@ -966,7 +1157,6 @@ router.post(
 router.post(
   '/permissions/:pid/spends',
   wrap(async (req, res) => {
-    requireAdmin(req);
     requireFields(req.body, ['amount']);
     // Idempotency key: standard `Idempotency-Key` header wins, else body field.
     // Retries that reuse the same key never double-charge the budget.
@@ -1073,6 +1263,78 @@ router.delete(
 // ---------------------------------------------------------------------------
 // Issuers (verifiable attestations)
 // ---------------------------------------------------------------------------
+router.post(
+  '/issuer-requests',
+  wrap(async (req, res) => {
+    // Any operator can request that an issuer verify their agent — no special
+    // key is needed to ask. The issuer decides, not the platform.
+    requireFields(req.body, ['agent_id', 'issuer_id']);
+    const reqDoc = await issuerRequestService.createRequest({
+      agentId: String(req.body.agent_id).trim(),
+      issuerId: String(req.body.issuer_id).trim(),
+      message: req.body.message,
+    });
+    res.status(201).json({ request: reqDoc });
+  })
+);
+
+router.get(
+  '/agents/:id/requests',
+  wrap(async (req, res) => {
+    const agent = await agentService.getAgent(req.params.id);
+    if (!agent) {
+      const err = new Error('Agent not found');
+      err.status = 404;
+      throw err;
+    }
+    res.json({ requests: await issuerRequestService.listRequestsByAgent(agent.id) });
+  })
+);
+
+router.get(
+  '/issuer-requests/:id',
+  wrap(async (req, res) => {
+    const doc = await issuerRequestService.getRequest(String(req.params.id).trim());
+    if (!doc) {
+      const err = new Error('Request not found');
+      err.status = 404;
+      throw err;
+    }
+    // The owning agent and the addressed issuer may view; others get the
+    // existence check (above) without the paywalled `message` body.
+    res.json({ request: doc });
+  })
+);
+
+router.get(
+  '/issuers/:id/requests',
+  requireIssuer,
+  wrap(async (req, res) => {
+    if (req.issuer.id !== req.params.id) {
+      const err = new Error('Cannot list requests for another issuer');
+      err.status = 403;
+      throw err;
+    }
+    res.json({ requests: await issuerRequestService.listRequestsByIssuer(req.issuer.id) });
+  })
+);
+
+router.post(
+  '/issuer-requests/:id/respond',
+  requireIssuer,
+  wrap(async (req, res) => {
+    requireFields(req.body, ['decision']);
+    const decision = String(req.body.decision).trim().toLowerCase();
+    const doc = await issuerRequestService.respondToRequest({
+      requestId: String(req.params.id).trim(),
+      issuerId: req.issuer.id,
+      decision,
+      responseMsg: req.body.response_msg != null ? String(req.body.response_msg) : null,
+    });
+    res.json({ request: doc });
+  })
+);
+
 router.post(
   '/issuers',
   wrap(async (req, res) => {

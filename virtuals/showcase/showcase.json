@@ -2,7 +2,7 @@
   "slug": "kairune-verifiable-trust",
   "title": "Kairune — Trust & Spend Layer for AI Agents",
   "tagline": "Give your agent a wallet, not a blank check: a verifiable trust score, scoped spend it can't cross, and a signed webhook the moment it's blocked.",
-  "description": "Kairune is the trust & spend layer for AI agents. It computes a deterministic trust score (0-1000) from an agent's behavior history and grants scoped spending permission by tier. Spend enforcement is live: charges under the ceiling are approved instantly, anything over is blocked with a 409 (ceiling_exceeded) — no config, no babysitting. Every decision (spend.approved / spend.blocked) fires an HMAC-SHA256 signed webhook to your backend in real time, so your stack knows the instant an agent hits its limit. The score's inputs are verifiable too: issuers register Ed25519 keys and sign each attestation, the server verifies every signature, and the scoring engine weights verified attestations fully while discounting unsigned ones (0.25x). Exposed as ACP offerings (lookup score, register agent, record attestation, full report) on Robinhood Chain via Virtuals.",
+  "description": "Kairune is the trust & spend layer for AI agents, and it is now self-serve end to end: any agent can register, earn attestations, cross a tier threshold, grant itself a scoped budget, spend against it, and revoke — no platform admin key anywhere in the path. It computes a deterministic trust score (0-1000) from behavior history and gates spending permission by tier, so an UNRATED agent is refused a budget (409 tier_too_low) instead of being trusted by default. Spend enforcement is live: charges under the ceiling are approved instantly, anything over is blocked with a 409 (ceiling_exceeded), and every decision (spend.approved / spend.blocked) fires an HMAC-SHA256 signed webhook in real time. Both sides of identity are verifiable: the wallet an agent claims can be proven with a standard EIP-191 personal_sign challenge (chain 4663, 600s TTL, no private key ever leaves the wallet), and attestation issuers register Ed25519 keys and sign each attestation, with verified ones weighted fully and unsigned ones discounted (0.25x). Exposed as ACP offerings (lookup score, register agent, record attestation, full report) on Robinhood Chain via Virtuals.",
   "status": "live",
   "topic": "commerce",
   "topics": ["identity", "commerce", "acp"],
@@ -22,7 +22,7 @@
   "visual": {
     "kind": "animated demo",
     "eyebrow": "live api + acp",
-    "title": "scoped spend, enforced + signed webhooks",
+    "title": "self-serve scoped spend, proven wallets, signed webhooks",
     "posterUrl": "https://raw.githubusercontent.com/Virtual-Protocol/acp-cli-demos/main/showcase/kairune-verifiable-trust/assets/poster.png",
     "videoUrl": "https://raw.githubusercontent.com/Virtual-Protocol/acp-cli-demos/main/showcase/kairune-verifiable-trust/assets/kairune-verify-demo.mp4",
     "videoLabel": "Watch the 0:06 demo on X"
@@ -58,8 +58,18 @@
       "kind": "proof"
     },
     {
-      "label": "API meta (signature_algorithm: ed25519, unverified_weight_factor: 0.25)",
+      "label": "API meta (wallet_proof: eip191-personal-sign, signature_algorithm: ed25519, unverified_weight_factor: 0.25)",
       "href": "https://kairune.online/api/meta",
+      "kind": "proof"
+    },
+    {
+      "label": "Wallet proof — prove control of a claimed wallet with EIP-191 personal_sign (chain 4663, 600s TTL, no private key shared)",
+      "href": "https://kairune.online/docs",
+      "kind": "proof"
+    },
+    {
+      "label": "Self-serve permissions — grant, spend, budget, payees, expiry and revoke with no admin key; UNRATED agents refused with 409 tier_too_low",
+      "href": "https://kairune.online/docs",
       "kind": "proof"
     },
     {
@@ -87,6 +97,8 @@
     "Should issuer identities be verified on-chain rather than by API key?",
     "What attestation kinds matter most for agent-to-agent commerce?",
     "Would a replay-protection window on signed submissions be worth the added friction?",
-    "Which spend events should fire webhooks beyond approved/blocked (e.g. ceiling_reached, permission_revoked)?"
+    "Which spend events should fire webhooks beyond approved/blocked (e.g. ceiling_reached, permission_revoked)?",
+    "Is EMERGING (score 250) the right floor before an agent may hold any spending budget, or should tier 0 get a probationary micro-ceiling?",
+    "Should a proven wallet (EIP-191) be required before an agent can receive a budget, not just recorded alongside it?"
   ]
 }

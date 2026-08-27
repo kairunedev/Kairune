@@ -123,7 +123,9 @@ function requireAdmin(req) {
     const b = Buffer.from(key);
     if (a.length === b.length && crypto.timingSafeEqual(a, b)) return true;
   }
-  const err = new Error('Admin key required to delete agents');
+  // Route-agnostic on purpose: this guard fronts several operator endpoints, so
+  // naming any one of them here sends callers chasing the wrong route.
+  const err = new Error('Admin key required for this endpoint');
   err.status = 401;
   throw err;
 }

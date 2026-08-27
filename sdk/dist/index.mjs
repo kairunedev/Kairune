@@ -1,21 +1,42 @@
+var __defProp = Object.defineProperty;
+var __defNormalProp = (obj, key, value) => key in obj ? __defProp(obj, key, { enumerable: true, configurable: true, writable: true, value }) : obj[key] = value;
+var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "symbol" ? key + "" : key, value);
+
 // src/index.ts
 var KairuneError = class extends Error {
-  status;
-  body;
   constructor(message, status, body) {
     super(message);
+    __publicField(this, "status");
+    __publicField(this, "body");
     this.name = "KairuneError";
     this.status = status;
     this.body = body;
   }
 };
+function spendQueryString(q = {}, extra = {}) {
+  const params = new URLSearchParams();
+  const set = (k, v) => {
+    if (v !== void 0 && v !== null && v !== "") params.set(k, String(v));
+  };
+  set("limit", q.limit);
+  set("offset", q.offset);
+  set("since", q.since);
+  set("until", q.until);
+  set("payee", q.payee);
+  set("idempotency_key", q.idempotency_key);
+  for (const [k, v] of Object.entries(extra)) set(k, v);
+  const s = params.toString();
+  return s ? `?${s}` : "";
+}
 var Kairune = class {
-  baseUrl;
-  adminKey;
-  _fetch;
   constructor(opts = {}) {
+    __publicField(this, "baseUrl");
+    __publicField(this, "adminKey");
+    __publicField(this, "issuerKey");
+    __publicField(this, "_fetch");
     this.baseUrl = (opts.baseUrl || "https://kairune.online").replace(/\/$/, "");
     this.adminKey = opts.adminKey || "";
+    this.issuerKey = opts.issuerKey || "";
     this._fetch = opts.fetch || globalThis.fetch;
   }
   // -------------------------------------------------------------------------
@@ -24,6 +45,11 @@ var Kairune = class {
   headers(write = false) {
     const h = { "content-type": "application/json" };
     if (write && this.adminKey) h["x-admin-key"] = this.adminKey;
+    return h;
+  }
+  issuerHeaders() {
+    const h = {};
+    if (this.issuerKey) h["x-issuer-key"] = this.issuerKey;
     return h;
   }
   async request(method, path, body, extraHeaders) {
@@ -95,6 +121,56 @@ var Kairune = class {
     }
   }
   /**
+   * Request a challenge for an agent to prove control of its wallet.
+   *
+   * Registering an agent only ever recorded a *claimed* address — the format
+   * was validated, control never was. These three methods close that gap using
+   * EIP-191 `personal_sign`, which every EVM wallet already implements, so no
+   * private key is ever sent to Kairune.
+   *
+   * The challenge is always issued for the wallet on record, not one you pass
+   * in, so nobody can mint challenges for addresses they don't already claim.
+   * Requesting a new challenge invalidates any previous outstanding one.
+   *
+   * ```ts
+   * const ch = await kairune.requestWalletChallenge(agentId)
+   * const signature = await wallet.signMessage(ch.message)  // ethers / viem / EIP-1193
+   * await kairune.submitWalletProof(agentId, ch.nonce, signature)
+   * ```
+   */
+  async requestWalletChallenge(agentId) {
+    return this.request(
+      "POST",
+      `/agents/${encodeURIComponent(agentId)}/wallet-proof/challenge`
+    );
+  }
+  /**
+   * Submit a signed challenge to prove wallet control.
+   *
+   * The nonce is single-use and is consumed on *any* attempt, successful or
+   * not — so a failed submission needs a fresh challenge. Throws
+   * KairuneError(401) if the recovered signer is not the claimed wallet.
+   */
+  async submitWalletProof(agentId, nonce, signature) {
+    return this.request(
+      "POST",
+      `/agents/${encodeURIComponent(agentId)}/wallet-proof`,
+      { nonce, signature }
+    );
+  }
+  /**
+   * Current wallet proof state for an agent.
+   *
+   * Proof is a property of the (agent, wallet) pair, so an agent that proved
+   * one address and later changed it reads as unproven again.
+   */
+  async getWalletProof(agentId) {
+    return this.request(
+      "GET",
+      `/agents/${encodeURIComponent(agentId)}/wallet-proof`
+    );
+  }
+  /**
    * Pre-flight trust check before paying another agent.
    *
    * The one call for agent-to-agent commerce: name a counterparty (by id,
@@ -152,10 +228,65 @@ var Kairune = class {
     const res = await this.request("GET", `/permissions/${permissionId}/budget`);
     return res.budget;
   }
-  /** Get spend history for a permission. */
-  async getSpends(permissionId, limit = 50) {
-    const res = await this.request("GET", `/permissions/${permissionId}/spends?limit=${limit}`);
+  /**
+   * Get spend history for one permission.
+   *
+   * Pass a number for a simple page size, or a {@link SpendQuery} to page and
+   * filter: `since`/`until` bound the window (`until` is exclusive so
+   * consecutive windows tile without double-counting), `payee` answers "have I
+   * paid this vendor before?", and `idempotency_key` answers "did that retry
+   * actually land?".
+   */
+  async getSpends(permissionId, opts = 50) {
+    const res = await this.getSpendPage(permissionId, opts);
     return res.spends;
+  }
+  /** Like {@link getSpends}, but also returns the paging echo so you can tell when a page is the last one. */
+  async getSpendPage(permissionId, opts = 50) {
+    const q = spendQueryString(typeof opts === "number" ? { limit: opts } : opts);
+    return this.request("GET", `/permissions/${permissionId}/spends${q}`);
+  }
+  /**
+   * Get spend history merged across every permission an agent holds.
+   *
+   * The per-permission history answers "what did this grant pay for"; this
+   * answers "what did this agent pay for" — which an operator running several
+   * grants on one agent cannot otherwise get in a single call. Each row also
+   * carries the granting permission's `category` and `period`.
+   *
+   * Requires an admin key: a grant's charge history is operator data, unlike
+   * the anonymised public {@link feed}.
+   */
+  async getAgentSpends(agentId, opts = {}) {
+    const res = await this.getAgentSpendPage(agentId, opts);
+    return res.spends;
+  }
+  /** Like {@link getAgentSpends}, but also returns the paging echo. */
+  async getAgentSpendPage(agentId, opts = {}) {
+    const q = spendQueryString(opts, { permission_id: opts.permission_id });
+    return this.request("GET", `/agents/${agentId}/spends${q}`, void 0, this.headers(true));
+  }
+  /**
+   * Aggregated spending for an agent: a total plus rollups by permission,
+   * category, and payee over an optional `[since, until)` window.
+   *
+   * This is the "how much did this agent spend this month, and on whom"
+   * report. Totals cover the requested window, not each permission's rolling
+   * ceiling window — use {@link getBudget} for remaining headroom.
+   *
+   * Requires an admin key.
+   */
+  async getSpendSummary(agentId, opts = {}) {
+    const q = spendQueryString(opts, {
+      top_payees: opts.top_payees == null ? void 0 : String(opts.top_payees)
+    });
+    const res = await this.request(
+      "GET",
+      `/agents/${agentId}/spend-summary${q}`,
+      void 0,
+      this.headers(true)
+    );
+    return res.summary;
   }
   /**
    * Get the public, independently-verifiable receipt for one approved spend.
@@ -274,6 +405,32 @@ var Kairune = class {
    */
   async setExpiry(permissionId, input = {}) {
     return this.request("POST", `/permissions/${permissionId}/expiry`, input);
+  }
+  // ---------------------------------------------------------------------------
+  // Issuer requests (marketplace handshake)
+  // ---------------------------------------------------------------------------
+  /** Create a verification request from an agent to an issuer. */
+  async createIssuerRequest(input) {
+    return this.request("POST", "/issuer-requests", input);
+  }
+  /** Fetch a single issuer request by id. */
+  async getIssuerRequest(requestId) {
+    return this.request("GET", `/issuer-requests/${encodeURIComponent(requestId)}`);
+  }
+  /** List requests an agent has created. */
+  async getAgentRequests(agentId) {
+    return this.request("GET", `/agents/${encodeURIComponent(agentId)}/requests`);
+  }
+  /** List requests an issuer has received. Issuer key required. */
+  async getIssuerRequests(issuerId) {
+    return this.request("GET", `/issuers/${encodeURIComponent(issuerId)}/requests`, void 0, this.issuerHeaders());
+  }
+  /** Accept or reject a request. Issuer key required — must match the addressed issuer. */
+  async respondToRequest(requestId, decision, opts = {}) {
+    return this.request("POST", `/issuer-requests/${encodeURIComponent(requestId)}/respond`, {
+      decision,
+      ...opts
+    }, this.issuerHeaders());
   }
   /**
    * Authorize a spend against a permission. Enforces the ceiling — and the
