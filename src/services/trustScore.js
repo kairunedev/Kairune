@@ -79,6 +79,52 @@ function recencyFactor(createdAt, now) {
 }
 
 /**
+ * Epoch ms for an attestation row's created_at, memoised per row object.
+ *
+ * Parsing ISO strings dominates scoring cost when the same rows are scored
+ * repeatedly — the tier planner rescores one agent's history ~90 times to
+ * project its route to the next tier, and `Date` parsing accounted for nearly
+ * all of that time. Keying on the row object means the cache only helps when
+ * rows are genuinely reused and never grows for one-shot reads.
+ *
+ * The cached string is stored alongside the timestamp and re-checked, so a row
+ * whose created_at is reassigned is re-parsed rather than served stale. A
+ * WeakMap keeps this from retaining rows past their normal lifetime.
+ *
+ * @param {object} att attestation row
+ * @param {string} createdAt the row's created_at, already resolved by the caller
+ * @returns {number} epoch ms (NaN for unparseable input, as Date would give)
+ */
+const createdAtMsCache = new WeakMap();
+
+function createdAtMs(att, createdAt) {
+  const hit = createdAtMsCache.get(att);
+  if (hit !== undefined && hit.iso === createdAt) return hit.ms;
+  const ms = new Date(createdAt).getTime();
+  createdAtMsCache.set(att, { iso: createdAt, ms });
+  return ms;
+}
+
+/**
+ * Decay factor for a row, using the memoised timestamp.
+ * Identical arithmetic to recencyFactor — only the parse is shared.
+ * @param {object} att attestation row
+ * @param {number} now epoch ms
+ * @returns {number} factor 0..1
+ */
+function rowRecencyFactor(att, now) {
+  const createdAt = att.created_at;
+  // Only objects can key a WeakMap; anything else falls back to a plain parse.
+  const ms =
+    att !== null && typeof att === 'object'
+      ? createdAtMs(att, createdAt)
+      : new Date(createdAt).getTime();
+  const ageMs = now - ms;
+  if (!Number.isFinite(ageMs) || ageMs <= 0) return 1;
+  return Math.pow(0.5, ageMs / 86_400_000 / HALF_LIFE_DAYS);
+}
+
+/**
  * Effective clean-attestation count that feeds the volume bonus, after
  * capping each issuer's contribution. Verified clean attestations from any
  * one issuer count only up to PER_ISSUER_VOLUME_CAP; clean attestations with
@@ -115,6 +161,10 @@ function tierForScore(score) {
     }
   }
   return { tier, label: TIER_LABELS[tier] };
+}
+
+function labelFor(score) {
+  return tierForScore(score).label;
 }
 
 /**
@@ -165,7 +215,7 @@ function computeScore(attestations, nowMs, opts = {}) {
       typeof att.weight === 'number' && att.weight !== 0
         ? att.weight
         : KIND_WEIGHTS[att.kind] || 0;
-    const decayed = base * recencyFactor(att.created_at, now) * vFactor;
+    const decayed = base * rowRecencyFactor(att, now) * vFactor;
 
     counts[att.kind] = (counts[att.kind] || 0) + 1;
 
@@ -245,6 +295,7 @@ module.exports = {
   PER_ISSUER_VOLUME_CAP,
   computeScore,
   tierForScore,
+  labelFor,
   suggestedDailyCeiling,
   cappedVolumeCount,
   recencyFactor,

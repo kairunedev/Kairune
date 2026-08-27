@@ -109,6 +109,7 @@ async function initSchema(c) {
   await ensureSpendColumns(c);
   await ensurePermissionColumns(c);
   await ensureSpendEventsConstraint(c);
+  await ensureIndexMigration(c);
 }
 
 /**
@@ -233,6 +234,18 @@ async function ensureSpendColumns(c) {
  * columns are added via PRAGMA table_info inspection + ALTER TABLE.
  * @param {import('@libsql/client').Client} c
  */
+async function ensureIndexMigration(c) {
+  // idx_spends_permission (permission_id) is superseded by idx_spends_permission_created
+  // (permission_id, created_at DESC) to cover both the hot window SUM and the
+  // permission-scoped feed ORDER BY. Leave the old name in place as a soft
+  // superset — Turso won't fail on duplicate indexes and a dropped index would
+  // briefly regress deployed regions during a rolling deploy. The new index
+  // being present is what matters.
+  await c.execute('CREATE INDEX IF NOT EXISTS idx_spends_permission_created ON spends(permission_id, created_at DESC)');
+  await c.execute('CREATE INDEX IF NOT EXISTS idx_spends_agent ON spends(agent_id)');
+  await c.execute('CREATE INDEX IF NOT EXISTS idx_attestations_agent_created ON attestations(agent_id, created_at DESC)');
+}
+
 async function ensureAttestationColumns(c) {
   const info = await c.execute('PRAGMA table_info(attestations)');
   const existing = new Set(info.rows.map((r) => r.name));

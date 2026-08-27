@@ -31,8 +31,17 @@
 export interface KairuneOptions {
   /** Base URL of the Kairune API. Default: https://kairune.online */
   baseUrl?: string
-  /** Admin key for write operations (spend, grant, attest, webhooks). */
+  /**
+   * Admin key for platform-operator endpoints: issuer registration, webhook
+   * management, agent status/delete, and the per-agent spend reports.
+   *
+   * Not needed to register an agent, attest, grant a permission, spend,
+   * scope payees, set expiry, or revoke — those are self-serve, gated by the
+   * agent's own trust tier rather than by a platform key.
+   */
   adminKey?: string
+  /** Issuer API key for issuer-own requests (to read/respond to them). */
+  issuerKey?: string
   /** Custom fetch implementation (optional, defaults to global fetch). */
   fetch?: typeof fetch
 }
@@ -142,6 +151,26 @@ export interface Spend {
   /** The platform_keys row that signed the receipt (for key rotation). */
   receipt_key_id?: string | null
   created_at: string
+}
+
+/**
+ * A request for an issuer to verify an agent's trust (the marketplace
+ * handshake). Issuers `accept` or `reject`; the actual attestation still
+ * flows through the normal verifiable path.
+ */
+export interface IssuerRequest {
+  id: string
+  agent_id: string
+  issuer_id: string
+  status: 'pending' | 'accepted' | 'rejected'
+  message: string | null
+  response_msg: string | null
+  created_at: string
+  responded_at: string | null
+  // Denormalised joins — present on list/get queries.
+  issuer_name?: string | null
+  agent_handle?: string | null
+  agent_wallet?: string | null
 }
 
 /**
@@ -265,6 +294,82 @@ export interface SpendPreview {
   spend?: Spend
 }
 
+/** Optional filters shared by both spend-history queries. */
+export interface SpendQuery {
+  /** Page size, clamped to 1..200 (default 50). */
+  limit?: number
+  /** Rows to skip, for paging through a long history. */
+  offset?: number
+  /** Only spends at or after this ISO date/timestamp (inclusive). */
+  since?: string
+  /** Only spends strictly before this ISO date/timestamp (exclusive, so windows tile). */
+  until?: string
+  /** Only spends paid to this payee (case-insensitive exact match). */
+  payee?: string
+  /** Only the spend recorded under this idempotency key — "did that retry land?". */
+  idempotency_key?: string
+}
+
+/** A spend as returned by the agent-wide history, carrying its grant's context. */
+export interface AgentSpend extends Spend {
+  /** Category of the permission the charge was authorized against. */
+  category?: string
+  /** Rolling period of that permission. */
+  period?: string
+}
+
+/** Paging echo returned alongside a spend history page. */
+export interface SpendPaging {
+  limit: number
+  offset: number
+  /** Rows in this page. Fewer than `limit` means you've reached the end. */
+  returned: number
+}
+
+/** One page of spend history. */
+export interface SpendPage<T = Spend> {
+  spends: T[]
+  paging: SpendPaging
+}
+
+/**
+ * Aggregated spending for one agent across every permission it holds.
+ *
+ * Totals cover the requested `[since, until)` window, NOT each permission's
+ * rolling ceiling window — a month-to-date report and a budget check answer
+ * different questions. Use `getBudget` for remaining headroom.
+ */
+export interface SpendSummary {
+  agent_id: string
+  handle?: string
+  /** The window that was reported on (`null` = unbounded). */
+  since: string | null
+  until: string | null
+  /** Total charged across all permissions in the window. */
+  total: number
+  /** Number of charges in the window. */
+  count: number
+  first_spend_at: string | null
+  last_spend_at: string | null
+  by_permission: Array<{
+    permission_id: string
+    category: string
+    period: string
+    ceiling: number
+    status: string
+    count: number
+    total: number
+  }>
+  by_category: Array<{ category: string; count: number; total: number }>
+  /** Top payees by amount. Charges with no named payee are excluded here but still counted in `total`. */
+  by_payee: Array<{
+    payee: string
+    count: number
+    total: number
+    last_spend_at: string | null
+  }>
+}
+
 export interface Attestation {
   id: string
   agent_id: string
@@ -310,6 +415,11 @@ export interface Meta {
   tiers: Array<{ tier: number; label: string; threshold: number }>
   periods: string[]
   max_score: number
+  /** Capability flag — false or absent on deployments predating wallet proof. */
+  wallet_proof?: boolean
+  wallet_proof_method?: string
+  /** Seconds a wallet challenge stays valid for. */
+  wallet_proof_ttl_s?: number
 }
 
 /**
@@ -333,9 +443,51 @@ export interface WalletProfile {
   suggested_daily_ceiling?: number
   /** active AND tier >= 1 — the go/no-go signal a gateway should key on. */
   trusted?: boolean
+  /**
+   * Whether this agent has cryptographically proven control of this wallet.
+   *
+   * Deliberately separate from `trusted`: an unproven wallet with real payment
+   * history is a different risk from a proven wallet with none, and folding
+   * them into one flag would hide which one you are looking at.
+   */
+  wallet_proven?: boolean
+  wallet_proven_at?: string | null
   updated_at?: string
   // Present only when registered === false:
   message?: string
+}
+
+/**
+ * A challenge to be signed by the agent's wallet to prove control of it.
+ *
+ * `message` is the exact string to pass to `personal_sign` — sign it verbatim,
+ * byte for byte. Everything that scopes the proof (domain, agent id, chain id,
+ * nonce, timestamp) lives inside that string, because only signed bytes are
+ * cryptographically committed to.
+ */
+export interface WalletChallenge {
+  agent_id: string
+  handle?: string
+  wallet: string
+  chain_id: number
+  nonce: string
+  /** Sign this exact text with personal_sign. */
+  message: string
+  issued_at: string
+  expires_at: string
+  expires_in_s: number
+}
+
+/** Result of a wallet proof, or its current state. */
+export interface WalletProof {
+  agent_id: string
+  handle?: string
+  proven: boolean
+  wallet: string
+  chain_id: number
+  verified_at: string | null
+  /** Signature scheme used. Currently always EIP-191 personal_sign. */
+  method?: string
 }
 
 export type CounterpartyCheckStatus = 'pass' | 'warn' | 'fail'
@@ -460,6 +612,31 @@ export class KairuneError extends Error {
   }
 }
 
+/**
+ * Serialize spend-history filters into a query string.
+ *
+ * Only keys the caller actually set are sent, so an omitted filter never
+ * narrows the result server-side. `extra` carries endpoint-specific params.
+ */
+function spendQueryString(
+  q: SpendQuery = {},
+  extra: Record<string, string | undefined> = {}
+): string {
+  const params = new URLSearchParams()
+  const set = (k: string, v: unknown) => {
+    if (v !== undefined && v !== null && v !== '') params.set(k, String(v))
+  }
+  set('limit', q.limit)
+  set('offset', q.offset)
+  set('since', q.since)
+  set('until', q.until)
+  set('payee', q.payee)
+  set('idempotency_key', q.idempotency_key)
+  for (const [k, v] of Object.entries(extra)) set(k, v)
+  const s = params.toString()
+  return s ? `?${s}` : ''
+}
+
 // ---------------------------------------------------------------------------
 // Client
 // ---------------------------------------------------------------------------
@@ -467,11 +644,13 @@ export class KairuneError extends Error {
 export class Kairune {
   private baseUrl: string
   private adminKey: string
+  private issuerKey: string
   private _fetch: typeof fetch
 
   constructor(opts: KairuneOptions = {}) {
     this.baseUrl = (opts.baseUrl || 'https://kairune.online').replace(/\/$/, '')
     this.adminKey = opts.adminKey || ''
+    this.issuerKey = (opts as any).issuerKey || ''
     this._fetch = opts.fetch || globalThis.fetch
   }
 
@@ -482,6 +661,12 @@ export class Kairune {
   private headers(write = false): Record<string, string> {
     const h: Record<string, string> = { 'content-type': 'application/json' }
     if (write && this.adminKey) h['x-admin-key'] = this.adminKey
+    return h
+  }
+
+  private issuerHeaders(): Record<string, string> {
+    const h: Record<string, string> = {}
+    if (this.issuerKey) h['x-issuer-key'] = this.issuerKey
     return h
   }
 
@@ -566,6 +751,59 @@ export class Kairune {
   }
 
   /**
+   * Request a challenge for an agent to prove control of its wallet.
+   *
+   * Registering an agent only ever recorded a *claimed* address — the format
+   * was validated, control never was. These three methods close that gap using
+   * EIP-191 `personal_sign`, which every EVM wallet already implements, so no
+   * private key is ever sent to Kairune.
+   *
+   * The challenge is always issued for the wallet on record, not one you pass
+   * in, so nobody can mint challenges for addresses they don't already claim.
+   * Requesting a new challenge invalidates any previous outstanding one.
+   *
+   * ```ts
+   * const ch = await kairune.requestWalletChallenge(agentId)
+   * const signature = await wallet.signMessage(ch.message)  // ethers / viem / EIP-1193
+   * await kairune.submitWalletProof(agentId, ch.nonce, signature)
+   * ```
+   */
+  async requestWalletChallenge(agentId: string): Promise<WalletChallenge> {
+    return this.request<WalletChallenge>(
+      'POST',
+      `/agents/${encodeURIComponent(agentId)}/wallet-proof/challenge`
+    )
+  }
+
+  /**
+   * Submit a signed challenge to prove wallet control.
+   *
+   * The nonce is single-use and is consumed on *any* attempt, successful or
+   * not — so a failed submission needs a fresh challenge. Throws
+   * KairuneError(401) if the recovered signer is not the claimed wallet.
+   */
+  async submitWalletProof(agentId: string, nonce: string, signature: string): Promise<WalletProof> {
+    return this.request<WalletProof>(
+      'POST',
+      `/agents/${encodeURIComponent(agentId)}/wallet-proof`,
+      { nonce, signature }
+    )
+  }
+
+  /**
+   * Current wallet proof state for an agent.
+   *
+   * Proof is a property of the (agent, wallet) pair, so an agent that proved
+   * one address and later changed it reads as unproven again.
+   */
+  async getWalletProof(agentId: string): Promise<WalletProof> {
+    return this.request<WalletProof>(
+      'GET',
+      `/agents/${encodeURIComponent(agentId)}/wallet-proof`
+    )
+  }
+
+  /**
    * Pre-flight trust check before paying another agent.
    *
    * The one call for agent-to-agent commerce: name a counterparty (by id,
@@ -634,10 +872,79 @@ export class Kairune {
     return res.budget
   }
 
-  /** Get spend history for a permission. */
-  async getSpends(permissionId: string, limit = 50): Promise<Spend[]> {
-    const res = await this.request<{ spends: Spend[] }>('GET', `/permissions/${permissionId}/spends?limit=${limit}`)
+  /**
+   * Get spend history for one permission.
+   *
+   * Pass a number for a simple page size, or a {@link SpendQuery} to page and
+   * filter: `since`/`until` bound the window (`until` is exclusive so
+   * consecutive windows tile without double-counting), `payee` answers "have I
+   * paid this vendor before?", and `idempotency_key` answers "did that retry
+   * actually land?".
+   */
+  async getSpends(permissionId: string, opts: number | SpendQuery = 50): Promise<Spend[]> {
+    const res = await this.getSpendPage(permissionId, opts)
     return res.spends
+  }
+
+  /** Like {@link getSpends}, but also returns the paging echo so you can tell when a page is the last one. */
+  async getSpendPage(permissionId: string, opts: number | SpendQuery = 50): Promise<SpendPage<Spend>> {
+    const q = spendQueryString(typeof opts === 'number' ? { limit: opts } : opts)
+    return this.request<SpendPage<Spend>>('GET', `/permissions/${permissionId}/spends${q}`)
+  }
+
+  /**
+   * Get spend history merged across every permission an agent holds.
+   *
+   * The per-permission history answers "what did this grant pay for"; this
+   * answers "what did this agent pay for" — which an operator running several
+   * grants on one agent cannot otherwise get in a single call. Each row also
+   * carries the granting permission's `category` and `period`.
+   *
+   * Requires an admin key: a grant's charge history across every permission on
+   * an agent is operator data, unlike the anonymised public {@link feed} or the
+   * per-permission history from {@link getSpends}.
+   */
+  async getAgentSpends(
+    agentId: string,
+    opts: SpendQuery & { permission_id?: string } = {}
+  ): Promise<AgentSpend[]> {
+    const res = await this.getAgentSpendPage(agentId, opts)
+    return res.spends
+  }
+
+  /** Like {@link getAgentSpends}, but also returns the paging echo. */
+  async getAgentSpendPage(
+    agentId: string,
+    opts: SpendQuery & { permission_id?: string } = {}
+  ): Promise<SpendPage<AgentSpend>> {
+    const q = spendQueryString(opts, { permission_id: opts.permission_id })
+    return this.request<SpendPage<AgentSpend>>('GET', `/agents/${agentId}/spends${q}`, undefined, this.headers(true))
+  }
+
+  /**
+   * Aggregated spending for an agent: a total plus rollups by permission,
+   * category, and payee over an optional `[since, until)` window.
+   *
+   * This is the "how much did this agent spend this month, and on whom"
+   * report. Totals cover the requested window, not each permission's rolling
+   * ceiling window — use {@link getBudget} for remaining headroom.
+   *
+   * Requires an admin key.
+   */
+  async getSpendSummary(
+    agentId: string,
+    opts: { since?: string; until?: string; payee?: string; top_payees?: number } = {}
+  ): Promise<SpendSummary> {
+    const q = spendQueryString(opts, {
+      top_payees: opts.top_payees == null ? undefined : String(opts.top_payees),
+    })
+    const res = await this.request<{ summary: SpendSummary }>(
+      'GET',
+      `/agents/${agentId}/spend-summary${q}`,
+      undefined,
+      this.headers(true)
+    )
+    return res.summary
   }
 
   /**
@@ -669,7 +976,11 @@ export class Kairune {
   }
 
   // -------------------------------------------------------------------------
-  // Write — requires admin key
+  // Write — self-serve; authorisation comes from the agent's trust tier
+  //
+  // Granting a permission is refused with 409 until the agent reaches
+  // EMERGING (score 250). The tier gate is the access control here, so no
+  // platform admin key is involved.
   // -------------------------------------------------------------------------
 
   /** Register a new agent. */
@@ -805,6 +1116,46 @@ export class Kairune {
     } = {}
   ): Promise<{ permission: Permission & { revived?: boolean } }> {
     return this.request('POST', `/permissions/${permissionId}/expiry`, input)
+  }
+
+  // ---------------------------------------------------------------------------
+  // Issuer requests (marketplace handshake)
+  // ---------------------------------------------------------------------------
+
+  /** Create a verification request from an agent to an issuer. */
+  async createIssuerRequest(input: {
+    agent_id: string
+    issuer_id: string
+    message?: string
+  }): Promise<{ request: IssuerRequest }> {
+    return this.request('POST', '/issuer-requests', input)
+  }
+
+  /** Fetch a single issuer request by id. */
+  async getIssuerRequest(requestId: string): Promise<{ request: IssuerRequest }> {
+    return this.request('GET', `/issuer-requests/${encodeURIComponent(requestId)}`)
+  }
+
+  /** List requests an agent has created. */
+  async getAgentRequests(agentId: string): Promise<{ requests: IssuerRequest[] }> {
+    return this.request('GET', `/agents/${encodeURIComponent(agentId)}/requests`)
+  }
+
+  /** List requests an issuer has received. Issuer key required. */
+  async getIssuerRequests(issuerId: string): Promise<{ requests: IssuerRequest[] }> {
+    return this.request('GET', `/issuers/${encodeURIComponent(issuerId)}/requests`, undefined, this.issuerHeaders())
+  }
+
+  /** Accept or reject a request. Issuer key required — must match the addressed issuer. */
+  async respondToRequest(
+    requestId: string,
+    decision: 'accepted' | 'rejected',
+    opts: { response_msg?: string } = {}
+  ): Promise<{ request: IssuerRequest }> {
+    return this.request('POST', `/issuer-requests/${encodeURIComponent(requestId)}/respond`, {
+      decision,
+      ...opts,
+    }, this.issuerHeaders())
   }
 
   /**

@@ -1,9 +1,11 @@
 'use strict';
 
-// Unit tests for the admin-key guard that protects the money-mutating routes
-// (POST /permissions/:pid/spends, POST /agents/:id/permissions,
-//  POST /permissions/:pid/revoke). The guard is bypassed under NODE_ENV=test,
-// so we exercise it directly with a controlled environment.
+// Unit tests for the admin-key guard that protects the platform-operator
+// routes (POST /issuers, POST /webhooks, PATCH /agents/:id/status,
+// DELETE /agents/:id, and the per-agent spend reports). Spend and permission
+// writes are deliberately NOT behind this guard — they are gated by the
+// agent's trust tier instead. The guard is bypassed under NODE_ENV=test, so we
+// exercise it directly with a controlled environment.
 
 const { test, beforeEach, afterEach } = require('node:test');
 const assert = require('node:assert');

@@ -531,21 +531,25 @@ async function authorizeSpend(
   }
 
   const ceiling = Number(permission.ceiling);
-  const used = await usedInWindow(permissionId, permission.period, opts.nowMs);
-  const remaining = ceiling - used;
-  if (value > remaining) {
+
+  // Refusal paths are factored out because the ceiling and velocity limits are
+  // each checked TWICE: once here to fail fast with an accurate `used` figure,
+  // and again inside the INSERT's WHERE clause so a concurrent charge cannot
+  // slip past between the read and the write. Both checks must refuse
+  // identically, so they share one implementation.
+  const blockCeiling = async (usedNow) => {
     const err = new Error(
       `Spend exceeds remaining budget (requested ${value}, remaining ${Math.max(
         0,
-        remaining
+        ceiling - usedNow
       )} per ${permission.period})`
     );
     err.status = 409;
     err.details = {
       requested: value,
       ceiling,
-      used,
-      remaining: Math.max(0, remaining),
+      used: usedNow,
+      remaining: Math.max(0, ceiling - usedNow),
       period: permission.period,
     };
     await emitSpendEvent('spend.blocked', {
@@ -553,8 +557,8 @@ async function authorizeSpend(
       agent_id: permission.agent_id,
       requested: value,
       ceiling,
-      used,
-      remaining: Math.max(0, remaining),
+      used: usedNow,
+      remaining: Math.max(0, ceiling - usedNow),
       period: permission.period,
       reason: 'ceiling_exceeded',
     });
@@ -567,7 +571,11 @@ async function authorizeSpend(
       reason: 'ceiling_exceeded',
     });
     throw err;
-  }
+  };
+
+  const used = await usedInWindow(permissionId, permission.period, opts.nowMs);
+  const remaining = ceiling - used;
+  if (value > remaining) await blockCeiling(used);
 
   // Velocity guard: even when the spend fits the period ceiling, block it if it
   // would push spend past the burst cap within the short rolling window. This
@@ -576,49 +584,52 @@ async function authorizeSpend(
   // both would trip. Emits a distinct `spend.velocity` signal so operators can
   // treat a burst (possible compromise) differently from a normal denial.
   const velocity = resolveVelocity(permission);
+
+  const blockVelocity = async (velUsed) => {
+    const err = new Error(
+      `Spend exceeds velocity limit (requested ${value}, ${Math.max(
+        0,
+        velocity.limit - velUsed
+      )} available within ${velocity.windowSeconds}s window)`
+    );
+    err.status = 429;
+    err.details = {
+      requested: value,
+      velocity_limit: velocity.limit,
+      velocity_window_s: velocity.windowSeconds,
+      velocity_used: velUsed,
+      velocity_remaining: Math.max(0, velocity.limit - velUsed),
+    };
+    await emitSpendEvent('spend.velocity', {
+      permission_id: permissionId,
+      agent_id: permission.agent_id,
+      requested: value,
+      ceiling,
+      period: permission.period,
+      velocity_limit: velocity.limit,
+      velocity_window_s: velocity.windowSeconds,
+      velocity_used: velUsed,
+      velocity_remaining: Math.max(0, velocity.limit - velUsed),
+      reason: 'velocity_exceeded',
+    });
+    await recordEvent('spend.blocked', {
+      agent_id: permission.agent_id,
+      agent_handle: agent.handle,
+      amount: value,
+      ceiling,
+      period: permission.period,
+      reason: 'velocity_exceeded',
+    });
+    throw err;
+  };
+
   if (velocity) {
     const velUsed = await usedInVelocityWindow(
       permissionId,
       velocity.windowMs,
       opts.nowMs
     );
-    if (velUsed + value > velocity.limit) {
-      const err = new Error(
-        `Spend exceeds velocity limit (requested ${value}, ${Math.max(
-          0,
-          velocity.limit - velUsed
-        )} available within ${velocity.windowSeconds}s window)`
-      );
-      err.status = 429;
-      err.details = {
-        requested: value,
-        velocity_limit: velocity.limit,
-        velocity_window_s: velocity.windowSeconds,
-        velocity_used: velUsed,
-        velocity_remaining: Math.max(0, velocity.limit - velUsed),
-      };
-      await emitSpendEvent('spend.velocity', {
-        permission_id: permissionId,
-        agent_id: permission.agent_id,
-        requested: value,
-        ceiling,
-        period: permission.period,
-        velocity_limit: velocity.limit,
-        velocity_window_s: velocity.windowSeconds,
-        velocity_used: velUsed,
-        velocity_remaining: Math.max(0, velocity.limit - velUsed),
-        reason: 'velocity_exceeded',
-      });
-      await recordEvent('spend.blocked', {
-        agent_id: permission.agent_id,
-        agent_handle: agent.handle,
-        amount: value,
-        ceiling,
-        period: permission.period,
-        reason: 'velocity_exceeded',
-      });
-      throw err;
-    }
+    if (velUsed + value > velocity.limit) await blockVelocity(velUsed);
   }
 
   const spend = {
@@ -651,12 +662,39 @@ async function authorizeSpend(
     spend.receipt_key_id = null;
   }
 
+  // The checks above read `used`, compared it, and would then insert — three
+  // separate round-trips. Two concurrent charges could both read the same
+  // `used`, both pass, and both insert, taking the permission over its ceiling.
+  // So the insert re-derives both sums in its own WHERE clause and only writes
+  // if the limits still hold at write time. INSERT..SELECT..WHERE is a single
+  // statement, so SQLite/libSQL evaluates the sums and appends the row without
+  // another writer interleaving. Zero rows written means we lost the race.
+  const windowSince = windowStart(permission.period, opts.nowMs);
+  const velocitySince = velocity
+    ? new Date((opts.nowMs || Date.now()) - velocity.windowMs).toISOString()
+    : null;
+
+  const guards = [
+    `(SELECT COALESCE(SUM(amount), 0) FROM spends
+        WHERE permission_id = ? AND created_at >= ?) + ? <= ?`,
+  ];
+  const guardArgs = [permissionId, windowSince, value, ceiling];
+  if (velocity) {
+    guards.push(
+      `(SELECT COALESCE(SUM(amount), 0) FROM spends
+          WHERE permission_id = ? AND created_at >= ?) + ? <= ?`
+    );
+    guardArgs.push(permissionId, velocitySince, value, velocity.limit);
+  }
+
+  let inserted;
   try {
-    await db.execute({
+    inserted = await db.execute({
       sql: `INSERT INTO spends
               (id, permission_id, agent_id, amount, note, payee, idempotency_key,
                receipt_signature, receipt_key_id, created_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+            SELECT ?, ?, ?, ?, ?, ?, ?, ?, ?, ?
+            WHERE ${guards.join(' AND ')}`,
       args: [
         spend.id,
         spend.permission_id,
@@ -668,6 +706,7 @@ async function authorizeSpend(
         spend.receipt_signature,
         spend.receipt_key_id,
         spend.created_at,
+        ...guardArgs,
       ],
     });
   } catch (e) {
@@ -684,6 +723,28 @@ async function authorizeSpend(
       }
     }
     throw e;
+  }
+
+  // Nothing written: a concurrent charge consumed the headroom this request had
+  // already checked for. Re-read the sums and refuse with the same error the
+  // fast path would have produced, so the caller cannot tell the difference
+  // between losing a race and simply being over budget.
+  if (Number(inserted.rowsAffected) === 0) {
+    const usedNow = await usedInWindow(
+      permissionId,
+      permission.period,
+      opts.nowMs
+    );
+    if (usedNow + value > ceiling) await blockCeiling(usedNow);
+    if (velocity) {
+      await blockVelocity(
+        await usedInVelocityWindow(permissionId, velocity.windowMs, opts.nowMs)
+      );
+    }
+    // Both limits read as satisfied on re-check, so the losing charge is gone
+    // from the window already (a backdated `nowMs` in tests, or a deletion).
+    // Refuse rather than retry: a spend that cannot be proven safe is not made.
+    await blockCeiling(usedNow);
   }
 
   const usedAfter = used + value;
@@ -977,20 +1038,269 @@ async function getSpendById(spendId) {
   return res.rows[0] || null;
 }
 
+// Bounds for a spend history query. `limit` is clamped rather than rejected so
+// a caller asking for "everything" gets a page instead of an error.
+const MAX_SPEND_PAGE = 200;
+const DEFAULT_SPEND_PAGE = 50;
+
 /**
- * List recent spends for a permission (most recent first).
+ * Clamp a requested page size into [1, MAX_SPEND_PAGE].
+ * @param {*} raw
+ * @returns {number}
+ */
+function clampLimit(raw) {
+  const n = Number(raw);
+  if (!Number.isFinite(n)) return DEFAULT_SPEND_PAGE;
+  return Math.min(Math.max(1, Math.floor(n)), MAX_SPEND_PAGE);
+}
+
+/**
+ * Clamp a requested offset to a non-negative integer.
+ * @param {*} raw
+ * @returns {number}
+ */
+function clampOffset(raw) {
+  const n = Number(raw);
+  if (!Number.isFinite(n) || n <= 0) return 0;
+  return Math.floor(n);
+}
+
+/**
+ * Normalize an ISO-ish date boundary for a spend query.
+ *
+ * Accepts anything `Date` parses (a full ISO timestamp or a bare `YYYY-MM-DD`)
+ * and returns a canonical ISO string, because `created_at` is stored as ISO
+ * text and string comparison is only correct against the same format. A
+ * present-but-unparseable value is a 400 rather than a silently ignored
+ * filter — a caller asking for "spends since X" must never get everything.
+ * @param {*} raw
+ * @param {string} field name used in the error message
+ * @returns {string|null}
+ */
+function normalizeDateBound(raw, field) {
+  if (raw === null || raw === undefined || raw === '') return null;
+  const ms = Date.parse(String(raw));
+  if (!Number.isFinite(ms)) {
+    const err = new Error(`${field} must be an ISO 8601 date or timestamp`);
+    err.status = 400;
+    throw err;
+  }
+  return new Date(ms).toISOString();
+}
+
+/**
+ * Build the shared WHERE fragment + args for a spend history query.
+ *
+ * Filters are ANDed and every one is optional:
+ *   since / until      half-open window on created_at ([since, until))
+ *   payee              exact payee match, case-insensitive
+ *   idempotency_key    exact key match (answers "did this retry land?")
+ *
+ * `until` is exclusive so consecutive windows (e.g. month boundaries) tile
+ * without double-counting a charge that lands exactly on the boundary.
+ * @param {{since?:*, until?:*, payee?:*, idempotencyKey?:*}} filters
+ * @returns {{clause:string, args:any[]}}
+ */
+function buildSpendFilter(filters = {}) {
+  const parts = [];
+  const args = [];
+
+  const since = normalizeDateBound(filters.since, 'since');
+  if (since) {
+    parts.push('created_at >= ?');
+    args.push(since);
+  }
+  const until = normalizeDateBound(filters.until, 'until');
+  if (until) {
+    parts.push('created_at < ?');
+    args.push(until);
+  }
+  if (filters.payee !== null && filters.payee !== undefined && filters.payee !== '') {
+    // Payees are stored exactly as named on the charge, but a handle or wallet
+    // is not case-significant, so match case-insensitively to make the filter
+    // usable without knowing how the charge happened to be spelled.
+    parts.push('payee IS NOT NULL AND LOWER(payee) = ?');
+    args.push(String(filters.payee).trim().toLowerCase());
+  }
+  const key = filters.idempotencyKey;
+  if (key !== null && key !== undefined && key !== '') {
+    parts.push('idempotency_key = ?');
+    args.push(String(key).trim());
+  }
+
+  return { clause: parts.length ? ` AND ${parts.join(' AND ')}` : '', args };
+}
+
+/**
+ * List spends for a permission (most recent first), with optional filters.
+ *
  * @param {string} permissionId
- * @param {{limit?:number}} [opts]
+ * @param {{limit?:number, offset?:number, since?:string, until?:string, payee?:string, idempotencyKey?:string}} [opts]
  * @returns {Promise<object[]>}
  */
-async function listSpends(permissionId, { limit = 50 } = {}) {
+async function listSpends(permissionId, opts = {}) {
   const db = await getDb();
+  const { clause, args } = buildSpendFilter(opts);
   const res = await db.execute({
-    sql: `SELECT * FROM spends WHERE permission_id = ?
-          ORDER BY created_at DESC LIMIT ?`,
-    args: [permissionId, Math.min(Math.max(1, limit), 200)],
+    sql: `SELECT * FROM spends WHERE permission_id = ?${clause}
+          ORDER BY created_at DESC, id DESC
+          LIMIT ? OFFSET ?`,
+    args: [permissionId, ...args, clampLimit(opts.limit), clampOffset(opts.offset)],
   });
   return res.rows;
+}
+
+/**
+ * List spends across every permission held by an agent (most recent first).
+ *
+ * The per-permission history answers "what did this grant pay for"; an
+ * operator running several grants on one agent needs the agent-wide view to
+ * answer "what did this agent pay for" at all. Joins through `permissions` so
+ * each row carries the granting permission's category, which is the dimension
+ * operators actually reason about.
+ * @param {string} agentId
+ * @param {{limit?:number, offset?:number, since?:string, until?:string, payee?:string, idempotencyKey?:string, permissionId?:string}} [opts]
+ * @returns {Promise<object[]>}
+ */
+async function listAgentSpends(agentId, opts = {}) {
+  const db = await getDb();
+  const { clause, args } = buildSpendFilter(opts);
+  const extra = [];
+  const extraArgs = [];
+  if (opts.permissionId) {
+    extra.push('s.permission_id = ?');
+    extraArgs.push(String(opts.permissionId));
+  }
+  const extraClause = extra.length ? ` AND ${extra.join(' AND ')}` : '';
+  // The filter fragment is written against bare column names, so qualify it
+  // for the joined query — `payee`, `created_at` and `idempotency_key` all
+  // live on `spends`.
+  const qualified = clause.replace(
+    /\b(created_at|payee|idempotency_key)\b/g,
+    's.$1'
+  );
+  const res = await db.execute({
+    sql: `SELECT s.*, p.category AS category, p.period AS period
+          FROM spends s
+          JOIN permissions p ON p.id = s.permission_id
+          WHERE s.agent_id = ?${qualified}${extraClause}
+          ORDER BY s.created_at DESC, s.id DESC
+          LIMIT ? OFFSET ?`,
+    args: [
+      agentId,
+      ...args,
+      ...extraArgs,
+      clampLimit(opts.limit),
+      clampOffset(opts.offset),
+    ],
+  });
+  return res.rows;
+}
+
+/**
+ * Aggregate an agent's spending across all of its permissions.
+ *
+ * Returns the total plus three rollups — by permission, by category, and by
+ * payee — over an optional date window. This is the "how much did this agent
+ * spend this month, and on whom" question that was previously unanswerable
+ * without walking every permission's history client-side.
+ *
+ * Note the totals are computed over the requested window, NOT over each
+ * permission's rolling ceiling window: a report and a budget check answer
+ * different questions, and conflating them would make a month-to-date report
+ * silently reset at each permission's period boundary. Use `budgetSummary`
+ * for remaining headroom.
+ * @param {string} agentId
+ * @param {{since?:string, until?:string, payee?:string, topPayees?:number}} [opts]
+ * @returns {Promise<object>}
+ */
+async function spendSummary(agentId, opts = {}) {
+  const db = await getDb();
+  const { clause, args } = buildSpendFilter(opts);
+  const qualified = clause.replace(
+    /\b(created_at|payee|idempotency_key)\b/g,
+    's.$1'
+  );
+  const where = `WHERE s.agent_id = ?${qualified}`;
+  const baseArgs = [agentId, ...args];
+
+  const [totals, byPermission, byCategory, byPayee] = await Promise.all([
+    db.execute({
+      sql: `SELECT COUNT(*) AS count,
+                   COALESCE(SUM(s.amount), 0) AS total,
+                   MIN(s.created_at) AS first_at,
+                   MAX(s.created_at) AS last_at
+            FROM spends s ${where}`,
+      args: baseArgs,
+    }),
+    db.execute({
+      sql: `SELECT s.permission_id, p.category, p.period, p.ceiling, p.status,
+                   COUNT(*) AS count, COALESCE(SUM(s.amount), 0) AS total
+            FROM spends s
+            JOIN permissions p ON p.id = s.permission_id
+            ${where}
+            GROUP BY s.permission_id
+            ORDER BY total DESC`,
+      args: baseArgs,
+    }),
+    db.execute({
+      sql: `SELECT p.category,
+                   COUNT(*) AS count, COALESCE(SUM(s.amount), 0) AS total
+            FROM spends s
+            JOIN permissions p ON p.id = s.permission_id
+            ${where}
+            GROUP BY p.category
+            ORDER BY total DESC`,
+      args: baseArgs,
+    }),
+    db.execute({
+      // Charges with no named payee are excluded rather than bucketed under
+      // NULL: "who did I pay" is a question about counterparties, and an
+      // unnamed charge has no answer. The total above still counts them.
+      sql: `SELECT s.payee,
+                   COUNT(*) AS count, COALESCE(SUM(s.amount), 0) AS total,
+                   MAX(s.created_at) AS last_at
+            FROM spends s
+            ${where} AND s.payee IS NOT NULL AND s.payee != ''
+            GROUP BY LOWER(s.payee)
+            ORDER BY total DESC
+            LIMIT ?`,
+      args: [...baseArgs, clampLimit(opts.topPayees)],
+    }),
+  ]);
+
+  const head = totals.rows[0] || {};
+  const num = (v) => Number(v) || 0;
+
+  return {
+    agent_id: agentId,
+    since: normalizeDateBound(opts.since, 'since'),
+    until: normalizeDateBound(opts.until, 'until'),
+    total: num(head.total),
+    count: num(head.count),
+    first_spend_at: head.first_at || null,
+    last_spend_at: head.last_at || null,
+    by_permission: byPermission.rows.map((r) => ({
+      permission_id: r.permission_id,
+      category: r.category,
+      period: r.period,
+      ceiling: num(r.ceiling),
+      status: r.status,
+      count: num(r.count),
+      total: num(r.total),
+    })),
+    by_category: byCategory.rows.map((r) => ({
+      category: r.category,
+      count: num(r.count),
+      total: num(r.total),
+    })),
+    by_payee: byPayee.rows.map((r) => ({
+      payee: r.payee,
+      count: num(r.count),
+      total: num(r.total),
+      last_spend_at: r.last_at || null,
+    })),
+  };
 }
 
 /**
@@ -1017,6 +1327,8 @@ module.exports = {
   budgetSummary,
   getSpendById,
   listSpends,
+  listAgentSpends,
+  spendSummary,
   listFeed,
   recordEvent,
   usedInWindow,
@@ -1026,9 +1338,15 @@ module.exports = {
   resolveAlertThreshold,
   resolveVelocity,
   usedInVelocityWindow,
+  buildSpendFilter,
+  normalizeDateBound,
+  clampLimit,
+  clampOffset,
   PERIOD_MS,
   MAX_IDEMPOTENCY_KEY_LEN,
   DEFAULT_VELOCITY_WINDOW_S,
+  MAX_SPEND_PAGE,
+  DEFAULT_SPEND_PAGE,
   GATE_BLOCKING_VERDICTS,
   enforcePayeeScope,
 };

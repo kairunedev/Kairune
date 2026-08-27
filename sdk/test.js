@@ -284,6 +284,48 @@ async function resolveTarget() {
     assert('previewSpend() flags velocity_exceeded', vPreview.allowed === false && vPreview.reason === 'velocity_exceeded');
     assert('preview budget exposes velocity_limit', vPreview.budget.velocity_limit === 30);
 
+    // --- SPEND REPORTING ---
+    // The velocity fixture above landed exactly one approved charge of 20 on
+    // vpid, so its totals are known and can be asserted exactly.
+    const agentSpends = await k.getAgentSpends(vAgent.id);
+    assert('getAgentSpends() returns array', Array.isArray(agentSpends));
+    assert('getAgentSpends() merges the charge', agentSpends.length === 1 && agentSpends[0].amount === 20);
+    assert('getAgentSpends() row carries the grant category', agentSpends[0].category === 'compute');
+
+    const page = await k.getAgentSpendPage(vAgent.id, { limit: 1 });
+    assert('getAgentSpendPage() echoes paging', page.paging.limit === 1 && page.paging.returned === 1);
+
+    const scoped = await k.getAgentSpends(vAgent.id, { permission_id: vpid });
+    assert('getAgentSpends() filters by permission_id', scoped.length === 1);
+
+    const summary = await k.getSpendSummary(vAgent.id);
+    assert('getSpendSummary() totals the agent', summary.total === 20 && summary.count === 1);
+    assert('getSpendSummary() rolls up by permission', summary.by_permission.length === 1 && summary.by_permission[0].permission_id === vpid);
+    assert('getSpendSummary() rolls up by category', summary.by_category.length === 1 && summary.by_category[0].category === 'compute');
+    assert('getSpendSummary() names the agent', summary.handle === vAgent.handle);
+
+    // A window that ends before the charge must report zero — proving the
+    // filter is applied and not silently dropped.
+    const empty = await k.getSpendSummary(vAgent.id, { since: '2020-01-01', until: '2020-02-01' });
+    assert('getSpendSummary() honours the window', empty.total === 0 && empty.count === 0);
+
+    // A malformed date is a 400, never a filter that quietly matches everything.
+    try {
+      await k.getSpendSummary(vAgent.id, { since: 'not-a-date' });
+      fail++; console.log(FAIL, 'getSpendSummary(bad date) should throw');
+    } catch (e) {
+      assert('getSpendSummary(bad date) throws 400', e instanceof KairuneError && e.status === 400);
+    }
+
+    // The per-permission history keeps its old call shape (a bare page size)
+    // while also accepting the new filter object.
+    const legacy = await k.getSpends(vpid, 10);
+    assert('getSpends(number) still works', Array.isArray(legacy) && legacy.length === 1);
+    const filtered = await k.getSpends(vpid, { limit: 10, since: '2020-01-01', until: '2020-02-01' });
+    assert('getSpends(query) applies filters', filtered.length === 0);
+    const spendPage = await k.getSpendPage(vpid, { limit: 5 });
+    assert('getSpendPage() echoes paging', spendPage.paging.limit === 5 && spendPage.paging.returned === 1);
+
     if (adminKey) {
       const ak = new Kairune({ adminKey, baseUrl: base });
       await ak.deleteAgent(agent.id).catch(() => {});

@@ -11,6 +11,17 @@ const el = (tag, cls, html) => {
   if (html != null) n.innerHTML = html;
   return n;
 };
+const esc = (s) => String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+function debounce(fn, ms){ let t; return (...a)=>{ clearTimeout(t); t=setTimeout(()=>fn(...a), ms); }; }
+function showSkeletons(){
+  const list=$('#agentList'); if(!list) return;
+  list.innerHTML='';
+  for(let i=0;i<6;i++){
+    const r=el('div','agent-row sk');
+    r.innerHTML='<div class="skeleton sk-score"></div><div class="agent-meta"><div class="skeleton sk-h"></div><div class="skeleton sk-w"></div></div><div class="skeleton sk-badge"></div>';
+    list.appendChild(r);
+  }
+}
 
 async function api(path, opts) {
   const headers = { 'Content-Type': 'application/json' };
@@ -46,15 +57,22 @@ function timeAgo(iso) {
   const h = Math.floor(m / 60); if (h < 24) return h + 'h ago';
   return Math.floor(h / 24) + 'd ago';
 }
-// ---- rendering: stats ----
+function shortWallet(w){ return w ? w.slice(0,10)+'…'+w.slice(-4) : '—'; }
+// ---- rendering: stats (cached DOM refs, no layout thrash) ----
+const statEls = {};
+function getStatEls(){
+  if(statEls.agents) return statEls;
+  statEls.agents=$('#stAgents'); statEls.att=$('#stAtt'); statEls.perms=$('#stPerms');
+  statEls.spend=$('#stSpend'); statEls.avg=$('#stAvg'); return statEls;
+}
 async function loadStats() {
   const s = await api('/stats');
-  $('#stAgents').textContent = s.total_agents;
-  $('#stAtt').textContent = s.total_attestations;
-  $('#stPerms').textContent = s.active_permissions;
-  const spendEl = $('#stSpend');
-  if (spendEl) spendEl.textContent = '$' + (s.total_spend != null ? s.total_spend : 0);
-  $('#stAvg').textContent = s.avg_score;
+  const e=getStatEls();
+  if(e.agents){ e.agents.textContent=s.total_agents; e.agents.classList.remove('skeleton','sk-stat'); }
+  if(e.att){ e.att.textContent=s.total_attestations; e.att.classList.remove('skeleton','sk-stat'); }
+  if(e.perms){ e.perms.textContent=s.active_permissions; e.perms.classList.remove('skeleton','sk-stat'); }
+  if(e.spend){ e.spend.textContent='$'+(s.total_spend!=null?s.total_spend:0); e.spend.classList.remove('skeleton','sk-stat'); }
+  if(e.avg){ e.avg.textContent=s.avg_score; e.avg.classList.remove('skeleton','sk-stat'); }
 }
 
 // ---- rendering: agent list ----
@@ -68,33 +86,35 @@ async function loadAgents() {
 
 function renderAgentList() {
   const list = $('#agentList');
-  list.innerHTML = '';
   const q = (($('#agentSearch') && $('#agentSearch').value) || '').trim().toLowerCase();
-  const agents = !q
-    ? state.agents
-    : state.agents.filter((a) =>
-        a.handle.toLowerCase().includes(q) ||
-        (a.wallet || '').toLowerCase().includes(q) ||
-        (a.operator || '').toLowerCase().includes(q)
-      );
-  if (!state.agents.length) {
-    list.appendChild(el('div', 'empty', 'No agents yet. Register one to begin.'));
-    return;
+  const all = state.agents;
+  const agents = !q ? all : all.filter((a) =>
+    a.handle.toLowerCase().includes(q) ||
+    (a.wallet || '').toLowerCase().includes(q) ||
+    (a.operator || '').toLowerCase().includes(q)
+  );
+  if (!all.length) { list.innerHTML=''; list.appendChild(el('div','empty','No agents yet. Register one to begin.')); return; }
+  if (!agents.length) { list.innerHTML=''; list.appendChild(el('div','empty','No agents match \u201c'+esc(q)+'\u201d')); return; }
+  const frag=document.createDocumentFragment();
+  const sel=state.selectedId;
+  for(let i=0;i<agents.length;i++){
+    const a=agents[i];
+    const row=document.createElement('div');
+    row.className='agent-row'+(a.id===sel?' active':'');
+    row.dataset.id=a.id;
+    row.innerHTML='<div class="agent-score">'+a.score+'</div><div class="agent-meta"><div class="h">'+esc(a.handle)+'</div><div class="w">'+esc(shortWallet(a.wallet))+'</div></div><div class="'+tierClass(a.tier)+'">T'+a.tier+'</div>';
+    frag.appendChild(row);
   }
-  if (!agents.length) {
-    list.appendChild(el('div', 'empty', 'No agents match “' + q + '”'));
-    return;
+  list.innerHTML='';
+  list.appendChild(frag);
+  // single delegated listener (avoid N listeners)
+  if(!list._wired){
+    list.addEventListener('click', (e)=>{
+      const r=e.target.closest('.agent-row'); if(!r||!r.dataset.id) return;
+      selectAgent(r.dataset.id);
+    });
+    list._wired=true;
   }
-  agents.forEach((a) => {
-    const row = el('div', 'agent-row' + (a.id === state.selectedId ? ' active' : ''));
-    row.innerHTML =
-      '<div class="agent-score">' + a.score + '</div>' +
-      '<div class="agent-meta"><div class="h">' + a.handle + '</div>' +
-      '<div class="w">' + a.wallet.slice(0, 10) + '…' + a.wallet.slice(-4) + '</div></div>' +
-      '<div class="' + tierClass(a.tier) + '">T' + a.tier + '</div>';
-    row.addEventListener('click', () => selectAgent(a.id));
-    list.appendChild(row);
-  });
 }
 // ---- rendering: detail panel ----
 const CIRC = 2 * Math.PI * 53;
@@ -127,12 +147,59 @@ function renderTrustSources(ts) {
 async function selectAgent(id) {
   state.selectedId = id;
   renderAgentList();
-  const [data, sources] = await Promise.all([
+  const [data, sources, proof] = await Promise.all([
     api('/agents/' + id),
     api('/agents/' + id + '/trust-sources').catch(() => null),
+    api('/agents/' + id + '/wallet-proof').catch(() => null),
   ]);
   data.trustSources = sources;
+  data.walletProof = proof;
   renderDetail(data);
+}
+
+// Wallet proof — claimed vs demonstrated. A payer needs to tell them apart.
+function renderProofBadge(proof) {
+  if (!proof) return '';
+  return proof.proven
+    ? '<span class="proof-badge proven" title="Signature verified ' + esc(proof.verified_at || '') + '"><i class="dot"></i>proven</span>'
+    : '<span class="proof-badge unproven" title="Wallet control has not been demonstrated"><i class="dot"></i>unproven</span>';
+}
+
+// Mint a challenge and show the exact text the wallet must sign. We never ask
+// for a private key — the operator signs in their own wallet and pastes back.
+async function requestProof(agentId) {
+  const box = $('#proofBox');
+  if (!box) return;
+  box.hidden = false;
+  box.innerHTML = '<div class="proof-msg">minting challenge…</div>';
+  try {
+    const c = await api('/agents/' + agentId + '/wallet-proof/challenge', { method: 'POST' });
+    box.innerHTML =
+      '<div class="proof-msg" id="proofText">' + esc(c.message) + '</div>' +
+      '<div class="proof-actions">' +
+      '<button type="button" class="chip" id="copyProofMsg">copy message</button>' +
+      '<input type="text" class="spend-amt" id="proofSig" placeholder="0x… signature" style="width:220px" />' +
+      '<button type="button" class="chip" id="submitProof">submit proof</button>' +
+      '</div>';
+    $('#copyProofMsg').addEventListener('click', async () => {
+      try { await navigator.clipboard.writeText(c.message); toast('message copied — sign it in your wallet', 'ok'); }
+      catch (_) { toast('copy failed', 'err'); }
+    });
+    $('#submitProof').addEventListener('click', async () => {
+      const sig = ($('#proofSig').value || '').trim();
+      if (!sig) { toast('paste the signature first', 'err'); return; }
+      try {
+        await api('/agents/' + agentId + '/wallet-proof', {
+          method: 'POST',
+          body: JSON.stringify({ nonce: c.nonce, signature: sig }),
+        });
+        toast('wallet proven — control demonstrated', 'ok');
+        selectAgent(agentId);
+      } catch (e) { toast(e.message, 'err'); }
+    });
+  } catch (e) {
+    box.innerHTML = '<div class="proof-msg">' + esc(e.message) + '</div>';
+  }
 }
 
 function renderDetail(data) {
@@ -145,14 +212,19 @@ function renderDetail(data) {
   const offset = CIRC * (1 - pct);
   const bd = a.breakdown || {};
 
+  const proof = data.walletProof;
   let html = '';
   html += '<div class="detail-inner">';
   html += '<div class="detail-top"><div>';
-  html += '<p class="h">' + a.handle + '</p>';
-  html += '<p class="w">' + a.wallet + '</p>';
-  if (a.operator) html += '<p class="op">operator · ' + a.operator + '</p>';
-  html += '<button type="button" class="share-btn" id="shareAgent" data-handle="' + a.handle + '">copy share link</button>';
-  html += '</div><div class="' + tierClass(a.tier) + '">' + (a.label || '') + '</div></div>';
+  html += '<p class="h">' + esc(a.handle) + '</p>';
+  html += '<div class="wallet-line"><p class="w">' + esc(a.wallet) + '</p>' + renderProofBadge(proof) + '</div>';
+  if (a.operator) html += '<p class="op">operator · ' + esc(a.operator) + '</p>';
+  html += '<div class="proof-actions">';
+  html += '<button type="button" class="share-btn" id="shareAgent" data-handle="' + esc(a.handle) + '">copy share link</button>';
+  if (proof && !proof.proven) html += '<button type="button" class="share-btn" id="proveWallet">prove wallet</button>';
+  html += '</div>';
+  html += '<div id="proofBox" hidden style="margin-top:10px"></div>';
+  html += '</div><div class="' + tierClass(a.tier) + '">' + esc(a.label || '') + '</div></div>';
 
   // score hero ring
   html += '<div class="score-hero"><div class="score-ring">';
@@ -212,6 +284,8 @@ function renderDetail(data) {
       }
     });
   }
+  const proveBtn = $('#proveWallet');
+  if (proveBtn) proveBtn.addEventListener('click', () => requestProof(a.id));
 }
 const POSITIVE_KINDS = ['task_completed', 'clean_payment', 'peer_vouch'];
 const NEGATIVE_KINDS = ['dispute', 'chargeback', 'anomaly_flag'];
@@ -589,12 +663,13 @@ async function refreshAll() {
 
 // ---- boot ----
 async function boot() {
+  showSkeletons();
   wireModal();
   wireApiStrip();
   wireHolderStrip();
   $('#refreshBtn').addEventListener('click', refreshAll);
   const search = $('#agentSearch');
-  if (search) search.addEventListener('input', renderAgentList);
+  if (search) search.addEventListener('input', debounce(renderAgentList, 140));
   const qs = $('#qsRegister');
   if (qs) qs.addEventListener('click', openModal);
   const runDemo = $('#runDemo');
@@ -607,6 +682,7 @@ async function boot() {
     setConn(true);
   } catch (e) { setConn(false); }
   await refreshAll();
+  // clear skeleton modifiers once first paint is done (loadStats/loadAgents cleaned them)
   await openDeepLink();
 
   const params = new URLSearchParams(location.search);
@@ -616,7 +692,12 @@ async function boot() {
     await runDemoLoop(btn);
   }
 
-  setInterval(loadStats, 15000);
+  // pause polling when tab is hidden to save battery / avoid stale writes
+  let pollId = null;
+  const startPoll = () => { if (pollId) return; pollId = setInterval(() => { if (document.visibilityState === 'visible') loadStats(); }, 15000); };
+  const stopPoll = () => { clearInterval(pollId); pollId = null; };
+  document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'visible') { loadStats(); startPoll(); } else stopPoll(); });
+  startPoll();
 }
 
 document.addEventListener('DOMContentLoaded', boot);

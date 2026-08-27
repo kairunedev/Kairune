@@ -23,15 +23,17 @@
  * else console.log('blocked:', result.error)
  * ```
  */
-interface KairuneOptions {
+export interface KairuneOptions {
     /** Base URL of the Kairune API. Default: https://kairune.online */
     baseUrl?: string;
     /** Admin key for write operations (spend, grant, attest, webhooks). */
     adminKey?: string;
+    /** Issuer API key for issuer-own requests (to read/respond to them). */
+    issuerKey?: string;
     /** Custom fetch implementation (optional, defaults to global fetch). */
     fetch?: typeof fetch;
 }
-interface Agent {
+export interface Agent {
     id: string;
     handle: string;
     wallet: string;
@@ -54,9 +56,9 @@ interface Agent {
  * `allowlist` implies `required`. Neither replaces the trust gate: an
  * allowlisted payee that starts failing its trust check is still refused.
  */
-type CounterpartyPolicy = 'open' | 'required' | 'allowlist';
+export type CounterpartyPolicy = 'open' | 'required' | 'allowlist';
 /** One payee pinned to a permission's allowlist. */
-interface PermissionPayee {
+export interface PermissionPayee {
     id: string;
     permission_id: string;
     /** Resolved payee agent, or `null` for a valid-but-unregistered wallet. */
@@ -71,7 +73,7 @@ interface PermissionPayee {
     registered?: boolean;
     created_at: string;
 }
-interface Permission {
+export interface Permission {
     id: string;
     agent_id: string;
     category: string;
@@ -95,7 +97,7 @@ interface Permission {
     granted_by: string | null;
     created_at: string;
 }
-interface Budget {
+export interface Budget {
     permission_id: string;
     agent_id: string;
     category: string;
@@ -117,7 +119,7 @@ interface Budget {
     /** True when the deadline has passed, so every further spend is refused. */
     expired?: boolean;
 }
-interface Spend {
+export interface Spend {
     id: string;
     permission_id: string;
     agent_id: string;
@@ -133,6 +135,24 @@ interface Spend {
     created_at: string;
 }
 /**
+ * A request for an issuer to verify an agent's trust (the marketplace
+ * handshake). Issuers `accept` or `reject`; the actual attestation still
+ * flows through the normal verifiable path.
+ */
+export interface IssuerRequest {
+    id: string;
+    agent_id: string;
+    issuer_id: string;
+    status: 'pending' | 'accepted' | 'rejected';
+    message: string | null;
+    response_msg: string | null;
+    created_at: string;
+    responded_at: string | null;
+    issuer_name?: string | null;
+    agent_handle?: string | null;
+    agent_wallet?: string | null;
+}
+/**
  * A publicly verifiable receipt for one approved spend.
  *
  * Kairune signs the exact charge fields (who paid, who was paid, how much,
@@ -142,7 +162,7 @@ interface Spend {
  * verifying the stored signature. A spend recorded before receipts existed
  * has `signed: false`.
  */
-interface SpendReceipt {
+export interface SpendReceipt {
     spend_id: string;
     /** False when the spend predates receipts (or signing failed) — no signature exists. */
     signed: boolean;
@@ -171,7 +191,7 @@ interface SpendReceipt {
     ephemeral_key: boolean;
 }
 /** The platform's current receipt-signing public key. */
-interface PlatformKey {
+export interface PlatformKey {
     algorithm: 'ed25519';
     purpose: 'receipt';
     /** SPKI PEM public key — pin this out-of-band to verify receipts independently. */
@@ -180,14 +200,14 @@ interface PlatformKey {
     ephemeral: boolean;
     receipt_endpoint: string;
 }
-interface SpendResult {
+export interface SpendResult {
     approved: true;
     spend: Spend;
     budget: Budget;
     /** True when this result is a replay of an earlier spend with the same idempotency key (no new charge was applied). */
     idempotent_replay?: boolean;
 }
-interface SpendBlocked {
+export interface SpendBlocked {
     approved: false;
     error: string;
     /**
@@ -215,14 +235,14 @@ interface SpendBlocked {
     };
 }
 /** Why a previewed spend would be blocked. `null` when it would be allowed. */
-type SpendPreviewReason = 'ceiling_exceeded' | 'velocity_exceeded' | 'permission_revoked' | 'agent_suspended' | 'agent_not_found' | 'counterparty_declined'
+export type SpendPreviewReason = 'ceiling_exceeded' | 'velocity_exceeded' | 'permission_revoked' | 'agent_suspended' | 'agent_not_found' | 'counterparty_declined'
 /** The permission's policy requires a payee, and none was named. */
  | 'counterparty_required'
 /** The named payee is not on this permission's allowlist. */
  | 'counterparty_not_allowed'
 /** The grant's deadline has passed. Extend it with `setExpiry` to resume. */
  | 'permission_expired';
-interface SpendPreview {
+export interface SpendPreview {
     /** Whether a real charge with these inputs would be authorized right now. */
     allowed: boolean;
     /** Machine-readable rejection reason, or `null` when allowed. */
@@ -236,7 +256,82 @@ interface SpendPreview {
     /** The original spend, present only on an idempotent replay. */
     spend?: Spend;
 }
-interface Attestation {
+/** Optional filters shared by both spend-history queries. */
+export interface SpendQuery {
+    /** Page size, clamped to 1..200 (default 50). */
+    limit?: number;
+    /** Rows to skip, for paging through a long history. */
+    offset?: number;
+    /** Only spends at or after this ISO date/timestamp (inclusive). */
+    since?: string;
+    /** Only spends strictly before this ISO date/timestamp (exclusive, so windows tile). */
+    until?: string;
+    /** Only spends paid to this payee (case-insensitive exact match). */
+    payee?: string;
+    /** Only the spend recorded under this idempotency key — "did that retry land?". */
+    idempotency_key?: string;
+}
+/** A spend as returned by the agent-wide history, carrying its grant's context. */
+export interface AgentSpend extends Spend {
+    /** Category of the permission the charge was authorized against. */
+    category?: string;
+    /** Rolling period of that permission. */
+    period?: string;
+}
+/** Paging echo returned alongside a spend history page. */
+export interface SpendPaging {
+    limit: number;
+    offset: number;
+    /** Rows in this page. Fewer than `limit` means you've reached the end. */
+    returned: number;
+}
+/** One page of spend history. */
+export interface SpendPage<T = Spend> {
+    spends: T[];
+    paging: SpendPaging;
+}
+/**
+ * Aggregated spending for one agent across every permission it holds.
+ *
+ * Totals cover the requested `[since, until)` window, NOT each permission's
+ * rolling ceiling window — a month-to-date report and a budget check answer
+ * different questions. Use `getBudget` for remaining headroom.
+ */
+export interface SpendSummary {
+    agent_id: string;
+    handle?: string;
+    /** The window that was reported on (`null` = unbounded). */
+    since: string | null;
+    until: string | null;
+    /** Total charged across all permissions in the window. */
+    total: number;
+    /** Number of charges in the window. */
+    count: number;
+    first_spend_at: string | null;
+    last_spend_at: string | null;
+    by_permission: Array<{
+        permission_id: string;
+        category: string;
+        period: string;
+        ceiling: number;
+        status: string;
+        count: number;
+        total: number;
+    }>;
+    by_category: Array<{
+        category: string;
+        count: number;
+        total: number;
+    }>;
+    /** Top payees by amount. Charges with no named payee are excluded here but still counted in `total`. */
+    by_payee: Array<{
+        payee: string;
+        count: number;
+        total: number;
+        last_spend_at: string | null;
+    }>;
+}
+export interface Attestation {
     id: string;
     agent_id: string;
     kind: string;
@@ -246,7 +341,7 @@ interface Attestation {
     created_at: string;
     verified?: boolean;
 }
-interface FeedEvent {
+export interface FeedEvent {
     event: 'spend.approved' | 'spend.blocked' | 'spend.threshold';
     agent_handle: string;
     amount: number;
@@ -255,14 +350,14 @@ interface FeedEvent {
     reason: string | null;
     created_at: string;
 }
-interface Webhook {
+export interface Webhook {
     id: string;
     url: string;
     events: string;
     status: string;
     created_at: string;
 }
-interface Stats {
+export interface Stats {
     total_agents: number;
     active_agents: number;
     total_attestations: number;
@@ -274,7 +369,7 @@ interface Stats {
         c: number;
     }>;
 }
-interface Meta {
+export interface Meta {
     attestation_kinds: string[];
     kind_weights: Record<string, number>;
     tiers: Array<{
@@ -284,13 +379,18 @@ interface Meta {
     }>;
     periods: string[];
     max_score: number;
+    /** Capability flag — false or absent on deployments predating wallet proof. */
+    wallet_proof?: boolean;
+    wallet_proof_method?: string;
+    /** Seconds a wallet challenge stays valid for. */
+    wallet_proof_ttl_s?: number;
 }
 /**
  * Trust profile for a Robinhood Chain wallet, returned by `lookupWallet`.
  * `registered: false` means the wallet is a valid address but not in the
  * registry — a useful "unknown" answer for a spend gateway.
  */
-interface WalletProfile {
+export interface WalletProfile {
     registered: boolean;
     wallet: string;
     chain: string;
@@ -305,13 +405,53 @@ interface WalletProfile {
     suggested_daily_ceiling?: number;
     /** active AND tier >= 1 — the go/no-go signal a gateway should key on. */
     trusted?: boolean;
+    /**
+     * Whether this agent has cryptographically proven control of this wallet.
+     *
+     * Deliberately separate from `trusted`: an unproven wallet with real payment
+     * history is a different risk from a proven wallet with none, and folding
+     * them into one flag would hide which one you are looking at.
+     */
+    wallet_proven?: boolean;
+    wallet_proven_at?: string | null;
     updated_at?: string;
     message?: string;
 }
-type CounterpartyCheckStatus = 'pass' | 'warn' | 'fail';
-type CounterpartyVerdict = 'proceed' | 'review' | 'decline';
+/**
+ * A challenge to be signed by the agent's wallet to prove control of it.
+ *
+ * `message` is the exact string to pass to `personal_sign` — sign it verbatim,
+ * byte for byte. Everything that scopes the proof (domain, agent id, chain id,
+ * nonce, timestamp) lives inside that string, because only signed bytes are
+ * cryptographically committed to.
+ */
+export interface WalletChallenge {
+    agent_id: string;
+    handle?: string;
+    wallet: string;
+    chain_id: number;
+    nonce: string;
+    /** Sign this exact text with personal_sign. */
+    message: string;
+    issued_at: string;
+    expires_at: string;
+    expires_in_s: number;
+}
+/** Result of a wallet proof, or its current state. */
+export interface WalletProof {
+    agent_id: string;
+    handle?: string;
+    proven: boolean;
+    wallet: string;
+    chain_id: number;
+    verified_at: string | null;
+    /** Signature scheme used. Currently always EIP-191 personal_sign. */
+    method?: string;
+}
+export type CounterpartyCheckStatus = 'pass' | 'warn' | 'fail';
+export type CounterpartyVerdict = 'proceed' | 'review' | 'decline';
 /** One named check that fed into the counterparty verdict. */
-interface CounterpartyCheck {
+export interface CounterpartyCheck {
     id: string;
     label: string;
     status: CounterpartyCheckStatus;
@@ -323,7 +463,7 @@ interface CounterpartyCheck {
  * An unregistered counterparty resolves to `registered: false` + a `decline`
  * verdict rather than throwing.
  */
-interface CounterpartyReport {
+export interface CounterpartyReport {
     registered: boolean;
     /** proceed = safe · review = caution / human-in-the-loop · decline = do not pay. */
     verdict: CounterpartyVerdict;
@@ -368,7 +508,7 @@ interface CounterpartyReport {
  * One candidate inside a counterparty comparison — the same assessment
  * `checkCounterparty` returns, flattened and given a `rank`.
  */
-interface CounterpartyCandidate {
+export interface CounterpartyCandidate {
     /** The reference as supplied by the caller (id, handle, or wallet). */
     ref: string;
     /** 1-based position in the ranking; 1 is the best pick. */
@@ -397,7 +537,7 @@ interface CounterpartyCandidate {
  * `recommended` is the best candidate that actually clears; it is `null` when
  * none reach `proceed`, rather than naming a least-bad option.
  */
-interface CounterpartyComparison {
+export interface CounterpartyComparison {
     /** The amount assessed against every candidate, or null when none was given. */
     requested_amount: number | null;
     /** How many candidates produced a verdict (excludes `unresolved`). */
@@ -409,17 +549,19 @@ interface CounterpartyComparison {
     /** References that could not be resolved to an agent (e.g. a typo'd handle). */
     unresolved: string[];
 }
-declare class KairuneError extends Error {
+export declare class KairuneError extends Error {
     status: number;
     body: unknown;
     constructor(message: string, status: number, body?: unknown);
 }
-declare class Kairune {
+export declare class Kairune {
     private baseUrl;
     private adminKey;
+    private issuerKey;
     private _fetch;
     constructor(opts?: KairuneOptions);
     private headers;
+    private issuerHeaders;
     private request;
     /** Get global statistics. */
     stats(): Promise<Stats>;
@@ -446,6 +588,40 @@ declare class Kairune {
      * An invalid (non-EVM) address still throws a KairuneError(400).
      */
     lookupWallet(wallet: string): Promise<WalletProfile>;
+    /**
+     * Request a challenge for an agent to prove control of its wallet.
+     *
+     * Registering an agent only ever recorded a *claimed* address — the format
+     * was validated, control never was. These three methods close that gap using
+     * EIP-191 `personal_sign`, which every EVM wallet already implements, so no
+     * private key is ever sent to Kairune.
+     *
+     * The challenge is always issued for the wallet on record, not one you pass
+     * in, so nobody can mint challenges for addresses they don't already claim.
+     * Requesting a new challenge invalidates any previous outstanding one.
+     *
+     * ```ts
+     * const ch = await kairune.requestWalletChallenge(agentId)
+     * const signature = await wallet.signMessage(ch.message)  // ethers / viem / EIP-1193
+     * await kairune.submitWalletProof(agentId, ch.nonce, signature)
+     * ```
+     */
+    requestWalletChallenge(agentId: string): Promise<WalletChallenge>;
+    /**
+     * Submit a signed challenge to prove wallet control.
+     *
+     * The nonce is single-use and is consumed on *any* attempt, successful or
+     * not — so a failed submission needs a fresh challenge. Throws
+     * KairuneError(401) if the recovered signer is not the claimed wallet.
+     */
+    submitWalletProof(agentId: string, nonce: string, signature: string): Promise<WalletProof>;
+    /**
+     * Current wallet proof state for an agent.
+     *
+     * Proof is a property of the (agent, wallet) pair, so an agent that proved
+     * one address and later changed it reads as unproven again.
+     */
+    getWalletProof(agentId: string): Promise<WalletProof>;
     /**
      * Pre-flight trust check before paying another agent.
      *
@@ -491,8 +667,52 @@ declare class Kairune {
     getPermissions(agentId: string): Promise<Permission[]>;
     /** Get remaining budget for a permission. */
     getBudget(permissionId: string): Promise<Budget>;
-    /** Get spend history for a permission. */
-    getSpends(permissionId: string, limit?: number): Promise<Spend[]>;
+    /**
+     * Get spend history for one permission.
+     *
+     * Pass a number for a simple page size, or a {@link SpendQuery} to page and
+     * filter: `since`/`until` bound the window (`until` is exclusive so
+     * consecutive windows tile without double-counting), `payee` answers "have I
+     * paid this vendor before?", and `idempotency_key` answers "did that retry
+     * actually land?".
+     */
+    getSpends(permissionId: string, opts?: number | SpendQuery): Promise<Spend[]>;
+    /** Like {@link getSpends}, but also returns the paging echo so you can tell when a page is the last one. */
+    getSpendPage(permissionId: string, opts?: number | SpendQuery): Promise<SpendPage<Spend>>;
+    /**
+     * Get spend history merged across every permission an agent holds.
+     *
+     * The per-permission history answers "what did this grant pay for"; this
+     * answers "what did this agent pay for" — which an operator running several
+     * grants on one agent cannot otherwise get in a single call. Each row also
+     * carries the granting permission's `category` and `period`.
+     *
+     * Requires an admin key: a grant's charge history is operator data, unlike
+     * the anonymised public {@link feed}.
+     */
+    getAgentSpends(agentId: string, opts?: SpendQuery & {
+        permission_id?: string;
+    }): Promise<AgentSpend[]>;
+    /** Like {@link getAgentSpends}, but also returns the paging echo. */
+    getAgentSpendPage(agentId: string, opts?: SpendQuery & {
+        permission_id?: string;
+    }): Promise<SpendPage<AgentSpend>>;
+    /**
+     * Aggregated spending for an agent: a total plus rollups by permission,
+     * category, and payee over an optional `[since, until)` window.
+     *
+     * This is the "how much did this agent spend this month, and on whom"
+     * report. Totals cover the requested window, not each permission's rolling
+     * ceiling window — use {@link getBudget} for remaining headroom.
+     *
+     * Requires an admin key.
+     */
+    getSpendSummary(agentId: string, opts?: {
+        since?: string;
+        until?: string;
+        payee?: string;
+        top_payees?: number;
+    }): Promise<SpendSummary>;
     /**
      * Get the public, independently-verifiable receipt for one approved spend.
      *
@@ -623,6 +843,32 @@ declare class Kairune {
             revived?: boolean;
         };
     }>;
+    /** Create a verification request from an agent to an issuer. */
+    createIssuerRequest(input: {
+        agent_id: string;
+        issuer_id: string;
+        message?: string;
+    }): Promise<{
+        request: IssuerRequest;
+    }>;
+    /** Fetch a single issuer request by id. */
+    getIssuerRequest(requestId: string): Promise<{
+        request: IssuerRequest;
+    }>;
+    /** List requests an agent has created. */
+    getAgentRequests(agentId: string): Promise<{
+        requests: IssuerRequest[];
+    }>;
+    /** List requests an issuer has received. Issuer key required. */
+    getIssuerRequests(issuerId: string): Promise<{
+        requests: IssuerRequest[];
+    }>;
+    /** Accept or reject a request. Issuer key required — must match the addressed issuer. */
+    respondToRequest(requestId: string, decision: 'accepted' | 'rejected', opts?: {
+        response_msg?: string;
+    }): Promise<{
+        request: IssuerRequest;
+    }>;
     /**
      * Authorize a spend against a permission. Enforces the ceiling — and the
      * burst (velocity) limit when the permission has one.
@@ -693,5 +939,4 @@ declare class Kairune {
         deleted: boolean;
     }>;
 }
-
-export { type Agent, type Attestation, type Budget, type CounterpartyCandidate, type CounterpartyCheck, type CounterpartyCheckStatus, type CounterpartyComparison, type CounterpartyPolicy, type CounterpartyReport, type CounterpartyVerdict, type FeedEvent, Kairune, KairuneError, type KairuneOptions, type Meta, type Permission, type PermissionPayee, type PlatformKey, type Spend, type SpendBlocked, type SpendPreview, type SpendPreviewReason, type SpendReceipt, type SpendResult, type Stats, type WalletProfile, type Webhook, Kairune as default };
+export default Kairune;

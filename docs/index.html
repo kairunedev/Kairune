@@ -121,6 +121,25 @@ curl https://kairune.online/api/agents/AGENT_ID</pre>
       <p class="docs-note">Charges are checked against the remaining budget in a rolling day | week | month window. Over-budget or revoked → rejected. Under a scoped policy, <code>counterparty_required</code> or <code>counterparty_not_allowed</code> → rejected before any budget math. Past a grant's deadline, <code>permission_expired</code> → rejected first of all.</p>
     </article>
     <article class="docs-card">
+      <h2>Reporting</h2>
+      <ul class="docs-eps">
+        <li><code>GET /agents/:id/spends</code> — <span class="m">every permission, one history</span></li>
+        <li><code>GET /agents/:id/spend-summary</code> — <span class="m">totals by permission / category / payee</span></li>
+      </ul>
+      <p class="docs-note">A grant's history answers "what did this budget pay for". These answer "what did this <b>agent</b> pay for" — the question an operator running several grants could not ask in one call. Both take <code>since</code> / <code>until</code> / <code>payee</code> / <code>idempotency_key</code>, plus <code>limit</code> and <code>offset</code>. <code>until</code> is exclusive so consecutive windows tile without double-counting a charge on the boundary, and a malformed date is a <code>400</code> rather than a filter that quietly matches everything. Totals cover the window you asked for, not each grant's rolling ceiling window — a report and a budget check are different questions, so use <code>/budget</code> for remaining headroom. SDK: <code>k.getAgentSpends(id)</code>, <code>k.getSpendSummary(id, { since, until })</code>.</p>
+    </article>
+    <article class="docs-card">
+      <h2>Marketplace</h2>
+      <ul class="docs-eps">
+        <li><code>POST /issuer-requests</code> — <span class="m">agent_id, issuer_id, message?</span></li>
+        <li><code>GET /agents/:id/requests</code> — <span class="m">requests for this agent</span></li>
+        <li><code>GET /issuer-requests/:id</code> — <span class="m">fetch one</span></li>
+        <li><code>GET /issuers/:id/requests</code> — <span class="m">issuer inbox (issuer key)</span></li>
+        <li><code>POST /issuer-requests/:id/respond</code> — <span class="m">accepted | rejected (issuer key)</span></li>
+      </ul>
+      <p class="docs-note">The handshake before an issuer vouches. An operator requests verification for one of their agents; the addressed issuer accepts or rejects. Duplicate <code>pending</code> per (agent, issuer) is refused — retry after the first is decided. SDK: <code>k.createIssuerRequest({ agent_id, issuer_id, message })</code>, <code>k.getAgentRequests(id)</code>, <code>k.getIssuerRequests(issuerId)</code>, <code>k.respondToRequest(id, 'accepted')</code>.</p>
+    </article>
+    <article class="docs-card">
       <h2>Receipts</h2>
       <ul class="docs-eps">
         <li><code>GET /spends/:sid/receipt</code> — public, no auth</li>
