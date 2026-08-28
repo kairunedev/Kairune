@@ -170,6 +170,17 @@ router.get('/meta', (req, res) => {
     wallet_proof_challenge_endpoint: '/api/agents/:id/wallet-proof/challenge',
     wallet_proof_endpoint: '/api/agents/:id/wallet-proof',
     wallet_proof_ttl_s: walletProof.CHALLENGE_TTL_S,
+    // ERC-8126 derived risk — verifiable interoperability view, NOT a
+    // compliance claim. Kairune does NOT implement ETV/MCV/SCV/WAV/WV,
+    // PDV/ZKP, or ERC-8004 tokenId. This is an inverted mapping so an
+    // 8196-style policy can consume Kairune's behavioral score.
+    erc8126_derived_risk: {
+      formula: '100 - Math.round(score/10)',
+      score_range: '0..100 where 0 = lowest risk (inverted vs Kairune 0..1000 high=good)',
+      tiers: { Low: '0-20', Moderate: '21-40', Elevated: '41-60', High: '61-80', Critical: '81-100' },
+      example: { kairune_score_357: 64, kairune_score_1000: 0, kairune_score_0: 100 },
+      note: 'Derived view only — Kairune is not an ERC-8126 verification provider. Use as minVerificationScore-style input, not as a substitute for ETV/MCV/SCV/WAV/WV.',
+    },
   });
 });
 
@@ -326,7 +337,18 @@ router.get(
       attestationService.listAttestations(base.id, { limit: 20 }),
       permissionService.listPermissions(base.id),
     ]);
-    res.json({ agent, attestations, permissions });
+    const derivedRisk = trustScore.erc8126DerivedRiskScore(agent.score);
+    res.json({
+      agent,
+      erc8126: {
+        derived_risk_score: derivedRisk,
+        derived_risk_tier: trustScore.erc8126RiskTier(derivedRisk),
+        formula: '100 - Math.round(score/10)',
+        note: 'Derived view only — not ERC-8126 compliance (no ETV/MCV/SCV/WAV/WV, no PDV/ZKP, no ERC-8004 tokenId).',
+      },
+      attestations,
+      permissions,
+    });
   })
 );
 

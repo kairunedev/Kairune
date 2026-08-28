@@ -285,6 +285,31 @@ function suggestedDailyCeiling(score) {
   return table[tier];
 }
 
+// ---------------------------------------------------------------------------
+// ERC-8126 derived risk — NOT a compliance claim.
+//
+// ERC-8126 risk is 0..100 where 0 = lowest risk. Kairune score is 0..1000
+// where high = good, so this is an inverted, clamped mapping for
+// interoperability (e.g. minVerificationScore-style policies). No ETV/MCV/
+// SCV/WAV/WV, no PDV/ZKP, no ERC-8004 tokenId is claimed here.
+// ---------------------------------------------------------------------------
+function erc8126DerivedRiskScore(score) {
+  const n = Number(score);
+  if (!Number.isFinite(n)) return null;
+  const clamped = Math.max(0, Math.min(MAX_SCORE, Math.round(n)));
+  return Math.max(0, Math.min(100, 100 - Math.round(clamped / 10)));
+}
+
+function erc8126RiskTier(risk) {
+  const n = Number(risk);
+  if (!Number.isFinite(n)) return null;
+  if (n <= 20) return 'Low';
+  if (n <= 40) return 'Moderate';
+  if (n <= 60) return 'Elevated';
+  if (n <= 80) return 'High';
+  return 'Critical';
+}
+
 module.exports = {
   KIND_WEIGHTS,
   TIER_THRESHOLDS,
@@ -300,4 +325,6 @@ module.exports = {
   cappedVolumeCount,
   recencyFactor,
   resolveUnverifiedFactor,
+  erc8126DerivedRiskScore,
+  erc8126RiskTier,
 };
