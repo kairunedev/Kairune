@@ -44,6 +44,8 @@
  *   GET    /api/feed                           public spend activity feed
  *   GET    /api/meta                           metadata (kinds, tiers)
  *   POST   /api/verify                          public, stateless Ed25519 signature check
+ *   GET    /api/erc8126/agents/:id              ERC-8126 derived adapter (not compliant) — same as /api/agents/:id/erc8126
+ *   GET    /api/agents/:id/erc8126              ERC-8126 derived adapter (not compliant)
  */
 
 const express = require('express');
@@ -60,6 +62,7 @@ const replayGuard = require('../services/replayGuard');
 const trustScore = require('../services/trustScore');
 const issuerDiversity = require('../services/issuerDiversity');
 const walletProof = require('../services/walletProof');
+const erc8126 = require('../services/erc8126');
 const { rateLimit } = require('../middleware/rateLimit');
 const { requireIssuer } = require('../middleware/issuerAuth');
 const {
@@ -180,6 +183,13 @@ router.get('/meta', (req, res) => {
       tiers: { Low: '0-20', Moderate: '21-40', Elevated: '41-60', High: '61-80', Critical: '81-100' },
       example: { kairune_score_357: 64, kairune_score_1000: 0, kairune_score_0: 100 },
       note: 'Derived view only — Kairune is not an ERC-8126 verification provider. Use as minVerificationScore-style input, not as a substitute for ETV/MCV/SCV/WAV/WV.',
+    },
+    // Full derived adapter for ERC-8126-shaped consumers — explicitly NOT
+    // compliant, with a per-type breakdown that says which checks are missing.
+    erc8126_adapter: {
+      compliant: false,
+      endpoints: ['/api/agents/:id/erc8126', '/api/erc8126/agents/:id'],
+      note: 'Same derived risk; adds per-type breakdown (ETV/MCV/SCV/WAV not_implemented, WV partial via EIP-191). No ZKP, no ERC-8004 agentId.',
     },
   });
 });
@@ -351,6 +361,48 @@ router.get(
     });
   })
 );
+
+// ERC-8126 derived adapter — a read view for consumers written against
+// ERC-8126 (AI Agent Verification), which is off-chain by design.
+//
+// This does NOT claim compliance, and the payload says so: `compliant: false`,
+// plus a per-type breakdown marking ETV/MCV/SCV/WAV `not_implemented` and WV
+// `partial` (Kairune proves wallet *control* via EIP-191 personal_sign, but the
+// spec's WV also wants transaction-history and threat-database checks).
+// PDV/ZKP/QCV are absent and `agentId` is null because Kairune identity is a
+// handle plus a Robinhood Chain address, not an ERC-8004 ERC-721 token id.
+//
+// The value it adds is the inversion: ERC-8126 risk is 0..100 with 0 = lowest
+// risk, while the Kairune score is 0..1000 with high = good. A consumer wiring
+// the raw score into a `minVerificationScore` gate would invert its own policy
+// and admit the agents it meant to refuse. Publishing the mapping once removes
+// that footgun.
+//
+// Public, read-only, nothing persisted. 404 for an unknown agent.
+const erc8126Handler = wrap(async (req, res) => {
+  const base = await agentService.getAgent(req.params.id);
+  if (!base) {
+    const err = new Error('Agent not found');
+    err.status = 404;
+    throw err;
+  }
+  // Recompute rather than read stored: a policy gate deciding whether to let
+  // money move should not act on a stale score.
+  const [agent, proof] = await Promise.all([
+    agentService.recalcAgent(base.id),
+    walletProof.proofStatus(base.id, base.wallet),
+  ]);
+  res.json(
+    erc8126.buildAdapterView(agent, proof, {
+      chainId: ROBINHOOD_CHAIN_ID,
+      walletProofMethod: 'eip191-personal-sign',
+    })
+  );
+});
+
+router.get('/agents/:id/erc8126', erc8126Handler);
+// Alias so a consumer that namespaces by spec can call it that way too.
+router.get('/erc8126/agents/:id', erc8126Handler);
 
 // Live leaderboard rank for an agent — the competitive, shareable "where do I
 // stand?" signal. Same universe/ordering as GET /api/agents (the public
