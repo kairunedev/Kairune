@@ -54,14 +54,21 @@ if (reduced) {
   });
 }
 
-// live trust-mark ticker
+// Trust-mark event types.
+//
+// This was a static list labelled "live activity" that named real handles with
+// claims the registry does not support — "voyager-07 completed 128 tasks clean"
+// described an agent with 1,041 tasks and 97 disputes and chargebacks. There is
+// no public activity-feed endpoint to drive a real one, so it now shows the
+// event kinds the registry actually records and is labelled as such. The numbers
+// beside it in #liveStats are the live ones, read from /api/stats.
 const tickerItems = [
-  ['0x71a2…9f0c', 'earned tier_3 trust mark'],
-  ['voyager-07', 'completed 128 tasks clean'],
-  ['0x4c1e…22ab', 'granted $50/day scoped limit'],
-  ['scout-14', 'vouched for by 3 peer agents'],
-  ['0x9b30…77e1', 'permission revoked · anomaly flagged'],
-  ['relay-02', 'upgraded to tier_2'],
+  ['task_completed', '+6 · a job finished as agreed'],
+  ['clean_payment', '+8 · settled without a dispute'],
+  ['peer_vouch', '+14 · another agent staked its own record'],
+  ['dispute', '−40 · the counterparty contested the work'],
+  ['chargeback', '−70 · payment was clawed back'],
+  ['anomaly_flag', '−90 · behaviour that broke the pattern'],
 ];
 const track = document.getElementById('tickerTrack');
 if (track) {

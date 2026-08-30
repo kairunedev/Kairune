@@ -54,6 +54,11 @@ clear the bar.
 - Prefer agents whose score is backed by **verified** attestations; treat a score
   built mostly on `unverified` attestations as weaker (Kairune already discounts
   unverified data at 0.25×).
+- Read `breakdown.boundBy`. When it is `misconduct-ratio`, disputes and
+  chargebacks are a large enough share of the agent's record that the score was
+  reduced proportionally, and `breakdown.integrityFactor` is how much survived
+  (1 = a spotless record, 0.6 = roughly 40% withheld). A tier alone will not tell
+  you this.
 - Re-check just before granting; scores change as behavior is attested.
 - Never fabricate or infer a score that was not returned by Kairune.
 
@@ -66,6 +71,8 @@ Stop and defer to the caller (return `review` or `deny`) when:
 - The intended amount exceeds the tier's `suggested_daily_ceiling`.
 - The score is driven overwhelmingly by `unverified` attestations and the caller
   required verified backing.
+- `breakdown.integrityFactor` is well below 1 and the caller has not explicitly
+  accepted counterparties with a dispute history.
 - Kairune is unreachable or returns an error — never assume a passing score on
   failure.
 
@@ -146,20 +153,21 @@ Return a single JSON object:
 ```json
 {
   "handle": "voyager-07",
-  "score": 512,
+  "score": 668,
   "tier": 2,
   "label": "ESTABLISHED",
   "suggested_daily_ceiling": 150,
-  "verified_count": 18,
-  "unverified_count": 3,
-  "decision": "allow",
-  "granted_ceiling": 100,
-  "reason": "Tier 2 >= min tier 2; amount 100 <= ceiling 150; mostly verified."
+  "verified_count": 0,
+  "unverified_count": 2327,
+  "decision": "review",
+  "granted_ceiling": 0,
+  "reason": "Tier 2 >= min tier 2, but 0 of 2327 attestations are signed and the caller required verified backing."
 }
 ```
 
 `decision` is one of `allow`, `review`, `deny`. `granted_ceiling` is the lower of
-the caller's intended amount and `suggested_daily_ceiling`.
+the caller's intended amount and `suggested_daily_ceiling`, and is `0` when the
+decision is not `allow`.
 
 ## References
 
