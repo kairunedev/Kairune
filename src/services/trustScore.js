@@ -147,6 +147,43 @@ function cappedVolumeCount(uncappedClean, cleanByIssuer) {
   return total;
 }
 
+// Misconduct is also priced as a *share* of an agent's record, not only as an
+// absolute deduction, because an absolute deduction stops meaning anything once
+// the positive side overflows the ceiling.
+//
+// That was a live bug: agents had accumulated a positive contribution several
+// times MAX_SCORE, so subtracting a four-figure penalty still landed above 1000
+// and the clamp quietly discarded it. Agents with a ~4-5% dispute-and-chargeback
+// rate reported a perfect 1000 / PRIME, and therefore the best risk rating
+// ERC-8126 has. The share survives the clamp because it is multiplicative.
+//
+// The denominator is the agent's total signal, so the factor is volume-
+// normalised: a large honest operator is not punished merely for having had
+// enough history to collect one dispute. INTEGRITY_SMOOTHING is a Laplace-style
+// prior that keeps a single bad event from being fatal for an agent with almost
+// no record.
+//
+// It reads the already-signed weights rather than a count of bad events, so
+// severity is preserved: a chargeback (-70) costs more than a dispute (-40).
+const INTEGRITY_SMOOTHING = 60;
+const INTEGRITY_SLOPE = 1.5;
+const MAX_INTEGRITY_DISCOUNT = 0.9; // never zero out a score on ratio alone
+
+/**
+ * Multiplier in [1 - MAX_INTEGRITY_DISCOUNT, 1] reflecting how much of an
+ * agent's total attestation weight is misconduct.
+ * @param {number} positive summed positive weight (decayed)
+ * @param {number} negativeAmplified summed negative weight (decayed, amplified)
+ * @returns {number} factor 0.1..1
+ */
+function integrityFactor(positive, negativeAmplified) {
+  const badWeight = Math.abs(negativeAmplified);
+  if (badWeight === 0) return 1;
+  const goodWeight = Math.max(0, positive);
+  const share = badWeight / (goodWeight + badWeight + INTEGRITY_SMOOTHING);
+  return 1 - Math.min(MAX_INTEGRITY_DISCOUNT, share * INTEGRITY_SLOPE);
+}
+
 /**
  * Determine the tier from a score.
  * @param {number} score
@@ -243,9 +280,30 @@ function computeScore(attestations, nowMs, opts = {}) {
   const volumeBonus = effectiveClean > 0 ? Math.log10(effectiveClean + 1) * 60 : 0;
 
   // Negative penalty is amplified (asymmetric).
-  const rawScore = BASELINE + positive + volumeBonus + negative * 1.15;
+  const negativeAmplified = negative * 1.15;
+  const rawScore = BASELINE + positive + volumeBonus + negativeAmplified;
 
-  const score = Math.max(0, Math.min(MAX_SCORE, Math.round(rawScore)));
+  // Two ways to price misconduct, and the stricter one wins.
+  //
+  // The additive path is the original model. The ratio path clamps the positive
+  // side FIRST and then scales it, which is what makes the penalty survive the
+  // ceiling. Taking the minimum means this can only ever lower a score relative
+  // to the additive model, so no agent is handed trust it had not already
+  // earned — the change is safe to apply to a live registry.
+  const additiveScore = Math.max(0, Math.min(MAX_SCORE, Math.round(rawScore)));
+  const integrity = integrityFactor(positive, negativeAmplified);
+  const ratioScore = Math.max(
+    0,
+    Math.min(
+      MAX_SCORE,
+      Math.round(
+        Math.min(MAX_SCORE, BASELINE + Math.max(0, positive) + volumeBonus) *
+          integrity
+      )
+    )
+  );
+
+  const score = Math.min(additiveScore, ratioScore);
   const { tier, label } = tierForScore(score);
 
   return {
@@ -256,12 +314,18 @@ function computeScore(attestations, nowMs, opts = {}) {
       baseline: BASELINE,
       positive: Math.round(positive),
       volumeBonus: Math.round(volumeBonus),
-      negative: Math.round(negative * 1.15),
+      negative: Math.round(negativeAmplified),
       verifiedCount,
       unverifiedCount,
       excludedCount,
       distinctIssuers: cleanByIssuer.size,
       effectiveCleanVolume: effectiveClean,
+      // Both candidates are published so a reader can see which rule bound the
+      // score, rather than having to reverse-engineer it from the total.
+      integrityFactor: Math.round(integrity * 1000) / 1000,
+      additiveScore,
+      ratioScore,
+      boundBy: ratioScore < additiveScore ? 'misconduct-ratio' : 'additive',
     },
     totals: {
       attestations: attestations.length,
@@ -318,11 +382,15 @@ module.exports = {
   BASELINE,
   DEFAULT_UNVERIFIED_FACTOR,
   PER_ISSUER_VOLUME_CAP,
+  INTEGRITY_SMOOTHING,
+  INTEGRITY_SLOPE,
+  MAX_INTEGRITY_DISCOUNT,
   computeScore,
   tierForScore,
   labelFor,
   suggestedDailyCeiling,
   cappedVolumeCount,
+  integrityFactor,
   recencyFactor,
   resolveUnverifiedFactor,
   erc8126DerivedRiskScore,

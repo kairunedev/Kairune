@@ -7,6 +7,8 @@ const {
   tierForScore,
   suggestedDailyCeiling,
   recencyFactor,
+  integrityFactor,
+  MAX_INTEGRITY_DISCOUNT,
 } = require('../services/trustScore');
 
 const now = Date.now();
@@ -107,4 +109,112 @@ test('the score always stays within 0..1000', () => {
   for (let i = 0; i < 5000; i++) spam.push({ kind: 'peer_vouch', created_at: fresh });
   const r = computeScore(spam, now);
   assert.ok(r.score <= 1000 && r.score >= 0);
+});
+
+// ---------------------------------------------------------------------------
+// Misconduct must survive the MAX_SCORE ceiling.
+//
+// These pin a bug that was live in production: with a large enough history the
+// positive contribution overflowed 1000 several times over, so the additive
+// penalty was subtracted and the result still landed above the ceiling. The
+// clamp then discarded it. Three agents with a ~4-5% dispute-and-chargeback
+// rate were reporting a perfect 1000 / PRIME, and via the ERC-8126 adapter the
+// best risk rating the spec has — a payer gating on that would have funded
+// exactly the agents it meant to refuse.
+// ---------------------------------------------------------------------------
+
+// Build a history big enough that the positive side overflows MAX_SCORE, which
+// is the precondition for the bug. Mirrors the shape of the real production
+// rows: overwhelmingly clean, a small percentage disputed.
+function highVolume(badCount, badKind = 'dispute', total = 2200) {
+  const atts = [];
+  for (let i = 0; i < total - badCount; i += 1) {
+    atts.push({ kind: 'task_completed', created_at: fresh, verification_status: 'verified' });
+  }
+  for (let i = 0; i < badCount; i += 1) {
+    atts.push({ kind: badKind, created_at: fresh, verification_status: 'verified' });
+  }
+  return atts;
+}
+
+test('a high-volume agent with a bad record cannot sit at a perfect 1000', () => {
+  const atts = highVolume(100);
+  const r = computeScore(atts, now);
+
+  // Confirm we actually reproduced the precondition, otherwise this test would
+  // pass for the wrong reason.
+  assert.ok(
+    r.breakdown.positive + r.breakdown.volumeBonus > 1000,
+    'precondition: the positive side must overflow the ceiling, got ' +
+      (r.breakdown.positive + r.breakdown.volumeBonus)
+  );
+  assert.ok(r.score < 1000, 'a disputed agent must not report a perfect score, got ' + r.score);
+  assert.strictEqual(r.breakdown.boundBy, 'misconduct-ratio');
+});
+
+test('a spotless high-volume agent can still reach 1000', () => {
+  const r = computeScore(highVolume(0), now);
+  assert.strictEqual(r.score, 1000);
+  assert.strictEqual(r.breakdown.integrityFactor, 1);
+  assert.strictEqual(r.breakdown.boundBy, 'additive');
+});
+
+test('at equal volume, more misconduct always scores lower', () => {
+  const scores = [0, 10, 50, 100, 200].map((bad) => computeScore(highVolume(bad), now).score);
+  for (let i = 1; i < scores.length; i += 1) {
+    assert.ok(
+      scores[i] < scores[i - 1],
+      'scores must decrease monotonically, got ' + scores.join(' > ')
+    );
+  }
+});
+
+test('misconduct cannot be diluted by piling on clean volume', () => {
+  // Same 5% bad rate at two very different volumes. If the penalty were purely
+  // additive against a clamped ceiling, the larger agent would look better.
+  const small = computeScore(highVolume(15, 'dispute', 300), now).score;
+  const large = computeScore(highVolume(500, 'dispute', 10000), now).score;
+  assert.ok(
+    Math.abs(large - small) < 120,
+    'the same bad rate should score similarly regardless of volume, got ' +
+      small + ' vs ' + large
+  );
+  assert.ok(large < 1000 && small < 1000);
+});
+
+test('severity is preserved: chargebacks cost more than disputes', () => {
+  const disputed = computeScore(highVolume(60, 'dispute'), now).score;
+  const chargedBack = computeScore(highVolume(60, 'chargeback'), now).score;
+  assert.ok(
+    chargedBack < disputed,
+    'the same count of a heavier kind must score lower, got ' +
+      chargedBack + ' vs ' + disputed
+  );
+});
+
+test('the ratio discount is capped, so a score is never zeroed on ratio alone', () => {
+  // An agent whose record is almost entirely misconduct still keeps a floor,
+  // because reaching exactly 0 should require the additive path.
+  const r = computeScore(highVolume(2100, 'chargeback', 2200), now);
+  assert.ok(r.breakdown.integrityFactor >= 1 - MAX_INTEGRITY_DISCOUNT - 1e-9);
+  assert.ok(r.score >= 0);
+});
+
+test('integrityFactor is 1 with no misconduct and falls as its share rises', () => {
+  assert.strictEqual(integrityFactor(500, 0), 1);
+  const light = integrityFactor(1000, -50);
+  const heavy = integrityFactor(1000, -800);
+  assert.ok(light < 1 && light > 0.9, 'a small share barely moves it, got ' + light);
+  assert.ok(heavy < light, 'a larger share discounts more');
+  assert.ok(heavy >= 1 - MAX_INTEGRITY_DISCOUNT, 'the discount stays capped');
+});
+
+test('the breakdown publishes both candidate scores and which one bound', () => {
+  const r = computeScore(highVolume(100), now);
+  assert.strictEqual(typeof r.breakdown.additiveScore, 'number');
+  assert.strictEqual(typeof r.breakdown.ratioScore, 'number');
+  // The reported score is always the stricter of the two, so the change can
+  // only ever lower a score relative to the old additive-only model.
+  assert.strictEqual(r.score, Math.min(r.breakdown.additiveScore, r.breakdown.ratioScore));
+  assert.ok(['additive', 'misconduct-ratio'].includes(r.breakdown.boundBy));
 });
