@@ -240,7 +240,7 @@
       <h2>A live budget that tracks behavior</h2>
       <p class="section-sub" style="margin-bottom:0;">A Kairune ceiling turns an agent's operating history into a concrete spending limit you can check before a single cent moves.</p>
       <ul class="demo-list">
-        <li><b>01</b> Built entirely from verifiable on-chain attestations</li>
+        <li><b>01</b> Built from signed attestations, weighted by whether they were verified</li>
         <li><b>02</b> Recalculates continuously as new activity lands</li>
         <li><b>03</b> Portable across every platform the agent touches</li>
       </ul>
@@ -251,7 +251,7 @@
           <div class="agent-id">0x71a2…9f0c</div>
           <p class="agent-name">Voyager-07</p>
         </div>
-        <span class="tier-tag">TIER_3 · TRUSTED</span>
+        <span class="tier-tag" id="demoTier">TIER_2 · ESTABLISHED</span>
       </div>
       <div class="ring-wrap">
         <div class="ring">
@@ -262,17 +262,17 @@
           <div class="ring-label"><b id="ringNum">0</b><span>score</span></div>
         </div>
         <div class="demo-metrics">
-          <div class="metric-row"><span>tasks_completed</span><b>1,284</b></div>
-          <div class="metric-row"><span>clean_payments</span><b>99.6%</b></div>
-          <div class="metric-row"><span>peer_vouches</span><b>37</b></div>
+          <div class="metric-row"><span>tasks_completed</span><b id="demoTasks">1,041</b></div>
+          <div class="metric-row"><span>clean_payments</span><b id="demoPayments">820</b></div>
+          <div class="metric-row"><span>peer_vouches</span><b id="demoVouches">369</b></div>
         </div>
       </div>
       <div style="margin-top:22px;">
-        <div class="metric-row"><span>spend_ceiling</span><b>$420/day</b></div>
+        <div class="metric-row"><span>spend_ceiling</span><b id="demoCeiling">$150/day</b></div>
         <div class="bar"><i id="bar1"></i></div>
       </div>
       <div style="margin-top:14px;">
-        <div class="metric-row"><span>next_tier_eta</span><b>~12 days</b></div>
+        <div class="metric-row"><span>disputes_chargebacks</span><b id="demoDisputes">97</b></div>
         <div class="bar"><i id="bar2"></i></div>
       </div>
     </div>

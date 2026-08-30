@@ -168,14 +168,22 @@ const bar1 = document.getElementById('bar1');
 const bar2 = document.getElementById('bar2');
 const demoCard = document.querySelector('.demo-card');
 const CIRC = 333.01;
-const SCORE = 847;
+
+// The card is labelled with a real handle and links to that agent's public page,
+// so the numbers have to be that agent's. They were hardcoded (847, TIER_3,
+// invented task counts) and drifted away from the live score, which meant the
+// homepage advertised a better rating than the page it linked to. Fetched live
+// now, with the last-known real values inlined in the HTML as the fallback.
+const DEMO_HANDLE = 'voyager-07';
+let SCORE = 668;
 let animated = false;
+
 function animateDemo() {
   if (animated) return;
   animated = true;
   const pct = SCORE / 1000;
   if (ring) ring.style.strokeDashoffset = String(CIRC * (1 - pct));
-  if (bar1) bar1.style.width = '78%';
+  if (bar1) bar1.style.width = Math.round(pct * 100) + '%';
   if (bar2) bar2.style.width = '46%';
   if (ringNum && !reduced) {
     let cur = 0;
@@ -190,6 +198,40 @@ function animateDemo() {
     ringNum.textContent = SCORE;
   }
 }
+
+// Pull the agent's real figures. Any failure leaves the inlined fallback in
+// place rather than showing a zero or an error, since this is decorative.
+function loadDemoAgent() {
+  if (!demoCard || typeof fetch !== 'function') return;
+  fetch('/api/agents/' + DEMO_HANDLE, { headers: { accept: 'application/json' } })
+    .then((r) => (r.ok ? r.json() : null))
+    .then((data) => {
+      const a = data && data.agent;
+      if (!a || typeof a.score !== 'number') return;
+      const kinds = (a.totals && a.totals.byKind) || {};
+      const set = (id, value) => {
+        const el = document.getElementById(id);
+        if (el && value != null) el.textContent = value;
+      };
+      set('demoTier', 'TIER_' + a.tier + ' · ' + (a.label || ''));
+      set('demoTasks', (kinds.task_completed || 0).toLocaleString());
+      set('demoPayments', (kinds.clean_payment || 0).toLocaleString());
+      set('demoVouches', (kinds.peer_vouch || 0).toLocaleString());
+      set('demoCeiling', '$' + (a.suggested_daily_ceiling || 0) + '/day');
+      set('demoDisputes', ((kinds.dispute || 0) + (kinds.chargeback || 0) + (kinds.anomaly_flag || 0)).toLocaleString());
+
+      SCORE = a.score;
+      // If the ring already animated to the fallback, move it to the real value.
+      if (animated) {
+        const pct = SCORE / 1000;
+        if (ring) ring.style.strokeDashoffset = String(CIRC * (1 - pct));
+        if (bar1) bar1.style.width = Math.round(pct * 100) + '%';
+        if (ringNum) ringNum.textContent = SCORE;
+      }
+    })
+    .catch(() => {});
+}
+loadDemoAgent();
 if (demoCard) {
   const checkDemo = () => {
     const r = demoCard.getBoundingClientRect();
