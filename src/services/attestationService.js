@@ -95,6 +95,36 @@ async function addAttestation(
 }
 
 /**
+ * Remove a single attestation and recalculate the agent's score.
+ *
+ * Attestations are append-only by design: a trust history that can be quietly
+ * edited is not a history. This exists for the cases where a row should never
+ * have been written at all — a bad-faith submission, or an operational mistake.
+ * It is admin-only, and it recalculates rather than adjusting in place so the
+ * score always reflects exactly the rows that remain.
+ *
+ * @param {string} agentId
+ * @param {string} attestationId
+ * @returns {Promise<{deleted:boolean, agent?:object}>} deleted=false when the
+ *   row does not exist or does not belong to this agent
+ */
+async function deleteAttestation(agentId, attestationId) {
+  const db = await getDb();
+  const agent = await agentService.getAgent(agentId);
+  if (!agent) return { deleted: false };
+
+  // Scoped to the agent so a valid attestation id cannot be removed via the
+  // wrong agent's URL.
+  const res = await db.execute({
+    sql: 'DELETE FROM attestations WHERE id = ? AND agent_id = ?',
+    args: [attestationId, agent.id],
+  });
+  if (!res.rowsAffected) return { deleted: false };
+
+  return { deleted: true, agent: await agentService.recalcAgent(agent.id) };
+}
+
+/**
  * List an agent's attestations (newest first). Surfaces verification_status;
  * for verified rows includes the issuer id + display name, for unverified rows
  * omits issuer fields. Never exposes signatures or key material.
@@ -158,6 +188,7 @@ async function listVerificationSources(agentId) {
 
 module.exports = {
   addAttestation,
+  deleteAttestation,
   listAttestations,
   listVerificationSources,
   VALID_KINDS,

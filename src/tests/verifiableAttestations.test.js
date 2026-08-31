@@ -675,3 +675,66 @@ test('an attributed issuer can still file a negative attestation', async () => {
   assert.strictEqual(r.body.attestation.verification_status, 'verified');
   assert.strictEqual(r.body.attestation.weight, -70);
 });
+
+// ---------------------------------------------------------------------------
+// Admin removal of a single attestation.
+//
+// Attestations are append-only for everyone else. This is the escape hatch for
+// rows that should never have existed, and the score must be recomputed from
+// what remains rather than adjusted in place.
+//
+// Note: requireAdmin short-circuits under NODE_ENV=test, so the 401 path is not
+// exercisable here — it is covered by the same guard as DELETE /agents/:id.
+// ---------------------------------------------------------------------------
+
+test('deleting an attestation recomputes the score from the remaining rows', async () => {
+  const agentId = await newAgent('delete-subject');
+  for (let i = 0; i < 12; i += 1) {
+    await req('POST', `/api/agents/${agentId}/attestations`, { kind: 'clean_payment' });
+  }
+  const before = await req('GET', `/api/agents/${agentId}`);
+  const scoreBefore = before.body.agent.score;
+  const rows = before.body.attestations;
+  assert.strictEqual(before.body.agent.totals.attestations, 12);
+
+  const del = await req('DELETE', `/api/agents/${agentId}/attestations/${rows[0].id}`);
+  assert.strictEqual(del.status, 200);
+  assert.strictEqual(del.body.deleted, true);
+
+  const after = await req('GET', `/api/agents/${agentId}`);
+  assert.strictEqual(after.body.agent.totals.attestations, 11);
+  assert.ok(
+    after.body.agent.score < scoreBefore,
+    'removing a positive attestation must lower the score'
+  );
+  assert.strictEqual(
+    after.body.agent.score,
+    del.body.agent.score,
+    'the delete response must report the recomputed score'
+  );
+});
+
+test('an attestation cannot be deleted through another agent URL', async () => {
+  const owner = await newAgent('delete-owner');
+  const bystander = await newAgent('delete-bystander');
+  const posted = await req('POST', `/api/agents/${owner}/attestations`, {
+    kind: 'clean_payment',
+  });
+  const attId = posted.body.attestation.id;
+
+  const wrong = await req('DELETE', `/api/agents/${bystander}/attestations/${attId}`);
+  assert.strictEqual(wrong.status, 404, 'delete must be scoped to the owning agent');
+
+  // The row survived.
+  const still = await req('GET', `/api/agents/${owner}`);
+  assert.strictEqual(still.body.agent.totals.attestations, 1);
+});
+
+test('deleting an unknown attestation is a 404', async () => {
+  const agentId = await newAgent('delete-missing');
+  const r = await req(
+    'DELETE',
+    `/api/agents/${agentId}/attestations/00000000-0000-0000-0000-000000000000`
+  );
+  assert.strictEqual(r.status, 404);
+});

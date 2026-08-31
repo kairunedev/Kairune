@@ -1041,6 +1041,27 @@ router.post(
   })
 );
 
+router.delete(
+  '/agents/:id/attestations/:aid',
+  wrap(async (req, res) => {
+    // Admin-only. Attestations are append-only for everyone else: a trust
+    // history that the subject can edit is not evidence of anything. This is
+    // the escape hatch for rows that should never have been written — bad-faith
+    // submissions, or operational mistakes.
+    requireAdmin(req);
+    const { deleted, agent } = await attestationService.deleteAttestation(
+      req.params.id,
+      req.params.aid
+    );
+    if (!deleted) {
+      const err = new Error('Attestation not found for this agent');
+      err.status = 404;
+      throw err;
+    }
+    res.json({ deleted: true, agent });
+  })
+);
+
 // ---------------------------------------------------------------------------
 // Permissions
 // ---------------------------------------------------------------------------
