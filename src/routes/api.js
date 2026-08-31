@@ -926,6 +926,25 @@ router.post(
     // server-side. This path needs no credentials, so honouring a caller's
     // weight let anyone set any agent's score to anything.
     if (present === 0) {
+      // Praise may be anonymous. Accusations may not.
+      //
+      // A negative attestation is a claim about someone else's conduct, and this
+      // path requires no credentials at all. Measured before this guard existed:
+      // 50 anonymous `anomaly_flag` posts took an agent with 300 clean records
+      // from 869/TRUSTED to 0 — roughly two minutes of requests to destroy any
+      // agent in the registry, from a caller who never identified themselves.
+      // Attribution is the whole point of a penalty: someone has to be on record
+      // as having made the claim, so it can be disputed and the issuer can be
+      // held responsible for a false one.
+      if (trustScore.NEGATIVE_KINDS.includes(req.body.kind)) {
+        const err = new Error(
+          'Negative attestations require issuer attribution: submit with issuer_id, ' +
+            'issuer_key_id and signature. Anonymous submissions may only report ' +
+            'positive outcomes.'
+        );
+        err.status = 401;
+        throw err;
+      }
       const result = await attestationService.addAttestation(agent.id, {
         kind: req.body.kind,
         amount: req.body.amount,

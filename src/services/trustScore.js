@@ -25,6 +25,14 @@ const KIND_WEIGHTS = Object.freeze({
   anomaly_flag: -90,
 });
 
+// Kinds that push a score down. These are accusations about another party, so
+// they are held to a higher bar than praise: the submission path requires issuer
+// attribution for them. Derived from KIND_WEIGHTS so a new penalty kind is
+// covered automatically rather than having to be remembered here.
+const NEGATIVE_KINDS = Object.freeze(
+  Object.keys(KIND_WEIGHTS).filter((k) => KIND_WEIGHTS[k] < 0)
+);
+
 // Threshold for each tier. Array index = tier.
 const TIER_THRESHOLDS = Object.freeze([0, 250, 500, 750, 900]);
 
@@ -376,6 +384,7 @@ function erc8126RiskTier(risk) {
 
 module.exports = {
   KIND_WEIGHTS,
+  NEGATIVE_KINDS,
   TIER_THRESHOLDS,
   TIER_LABELS,
   MAX_SCORE,

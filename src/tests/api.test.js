@@ -249,7 +249,11 @@ test('counterparty gate: a spend to a declined payee is blocked (409) with budge
     operator: 'CI',
   });
   const payeeId = payee.body.agent.id;
-  await req('POST', '/api/agents/' + payeeId + '/attestations', { kind: 'chargeback' });
+  // Attributed, not anonymous: negative attestations require an issuer, so an
+  // unsigned post here would 401 and the payee would only decline for being
+  // unrated — which would let this test pass without exercising the gate.
+  const stamped = await signedAttest(payeeId, 'chargeback', ctx);
+  assert.strictEqual(stamped.status, 201);
 
   // Preview says no-go for the bad payee.
   const preview = await req('POST', '/api/permissions/' + pid + '/spends/preview', {

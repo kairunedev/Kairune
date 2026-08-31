@@ -582,3 +582,96 @@ test('a signed attestation cannot supply its own weight either', async () => {
     'weight must be derived from kind even when the submission is verified'
   );
 });
+
+// ---------------------------------------------------------------------------
+// Anonymous callers may praise, but may not accuse.
+//
+// Before this guard, the unsigned path accepted negative kinds with no
+// credentials. Measured: 50 anonymous `anomaly_flag` posts drove an agent with
+// 300 clean attestations from 869/TRUSTED to 0. That is a griefing vector
+// against every agent in the registry, not just a spam problem.
+// ---------------------------------------------------------------------------
+
+test('an anonymous caller cannot file a negative attestation', async () => {
+  const agentId = await newAgent('grief-target');
+
+  for (const kind of ['dispute', 'chargeback', 'anomaly_flag']) {
+    const r = await req('POST', `/api/agents/${agentId}/attestations`, { kind });
+    assert.strictEqual(
+      r.status,
+      401,
+      `${kind} must not be accepted without issuer attribution`
+    );
+  }
+
+  // The agent's score is untouched: a fresh agent sits at the baseline.
+  const after = await req('GET', `/api/agents/${agentId}`);
+  assert.strictEqual(after.body.agent.score, 120);
+  assert.strictEqual(after.body.agent.totals.attestations, 0);
+});
+
+test('an anonymous caller cannot grief an agent down from a good score', async () => {
+  const agentId = await newAgent('grief-established');
+
+  // Build a genuine positive record the honest way.
+  for (let i = 0; i < 40; i += 1) {
+    await req('POST', `/api/agents/${agentId}/attestations`, {
+      kind: 'clean_payment',
+    });
+  }
+  const before = await req('GET', `/api/agents/${agentId}`);
+  const scoreBefore = before.body.agent.score;
+  assert.ok(scoreBefore > 120, 'setup: agent must have earned a score first');
+
+  // 60 anonymous accusations — previously enough to zero the agent out.
+  for (let i = 0; i < 60; i += 1) {
+    const r = await req('POST', `/api/agents/${agentId}/attestations`, {
+      kind: 'anomaly_flag',
+    });
+    assert.strictEqual(r.status, 401);
+  }
+
+  const after = await req('GET', `/api/agents/${agentId}`);
+  assert.strictEqual(
+    after.body.agent.score,
+    scoreBefore,
+    'anonymous accusations must not move the score at all'
+  );
+});
+
+test('an attributed issuer can still file a negative attestation', async () => {
+  const { id: issuerId, apiKey } = await registerIssuer('penalty-issuer');
+  const { pem, privateKey } = keypair();
+  const keyRes = await req(
+    'POST',
+    `/api/issuers/${issuerId}/keys`,
+    { public_key: pem },
+    { 'X-Issuer-Key': apiKey }
+  );
+  const keyId = keyRes.body.key.id;
+
+  const agentId = await newAgent('penalty-subject');
+  const issued_at = new Date().toISOString();
+  const fields = {
+    agent_id: agentId,
+    kind: 'chargeback',
+    amount: 0,
+    note: null,
+    issuer_id: issuerId,
+    issuer_key_id: keyId,
+    issued_at,
+  };
+  const signature = crypto
+    .sign(null, Buffer.from(canonicalPayload(fields)), privateKey)
+    .toString('base64');
+
+  const r = await req(
+    'POST',
+    `/api/agents/${agentId}/attestations`,
+    { kind: 'chargeback', issuer_id: issuerId, issuer_key_id: keyId, signature, issued_at },
+    { 'X-Issuer-Key': apiKey }
+  );
+  assert.strictEqual(r.status, 201, 'a signed penalty must still be accepted');
+  assert.strictEqual(r.body.attestation.verification_status, 'verified');
+  assert.strictEqual(r.body.attestation.weight, -70);
+});
