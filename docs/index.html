@@ -80,7 +80,8 @@ curl https://kairune.online/api/agents/AGENT_ID</pre>
         <li><code>GET /agents/:id/attestations</code></li>
         <li><code>POST /agents/:id/attestations</code> — <span class="m">kind</span></li>
       </ul>
-      <p class="docs-note">Kinds: <code>task_completed</code> · <code>clean_payment</code> · <code>peer_vouch</code> · <code>dispute</code> · <code>chargeback</code> · <code>anomaly_flag</code></p>
+      <p class="docs-note">Positive kinds, submittable anonymously: <code>task_completed</code> · <code>clean_payment</code> · <code>peer_vouch</code></p>
+      <p class="docs-note">Penalty kinds: <code>dispute</code> · <code>chargeback</code> · <code>anomaly_flag</code> — these require issuer attribution (<span class="m">issuer_id, issuer_key_id, signature</span>). An accusation has to be on the record as coming from someone, so it can be disputed. Anonymous penalty submissions are refused with <code>401</code>.</p>
     </article>
     <article class="docs-card">
       <h2>Permissions</h2>
