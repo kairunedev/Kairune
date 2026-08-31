@@ -492,3 +492,93 @@ test('trust-sources: multiple independent issuers raise confidence and diversity
   );
   assert.ok(d.body.top_issuer_share <= 0.5, 'no single issuer should dominate the diverse agent');
 });
+
+// --- weight is server-derived, never caller-supplied ------------------------
+//
+// The unsigned submission path needs no credentials, and `weight` was never in
+// CANONICAL_FIELDS, so a signature never covered it either. Passing it through
+// verbatim meant one anonymous request could set any agent's score to either end
+// of the range. These tests pin the weight to KIND_WEIGHTS on both paths.
+
+test('an unsigned attestation cannot supply its own weight', async () => {
+  const agentId = await newAgent('weight-liar');
+  const r = await req('POST', `/api/agents/${agentId}/attestations`, {
+    kind: 'clean_payment',
+    weight: 100000,
+  });
+  assert.strictEqual(r.status, 201);
+  assert.strictEqual(
+    r.body.attestation.weight,
+    8,
+    'weight must come from KIND_WEIGHTS[clean_payment], not the request body'
+  );
+
+  // The real damage was to the score, so assert that directly.
+  const after = await req('GET', `/api/agents/${agentId}`);
+  assert.ok(
+    after.body.agent.score < 1000,
+    'a single unsigned attestation must not be able to max out a score'
+  );
+  assert.strictEqual(after.body.agent.tier, 0, 'one clean payment is not a tier-4 record');
+});
+
+test('an anonymous caller cannot zero out an agent with a negative weight', async () => {
+  const agentId = await newAgent('weight-attack');
+  const baseline = await req('GET', `/api/agents/${agentId}`);
+
+  const r = await req('POST', `/api/agents/${agentId}/attestations`, {
+    kind: 'clean_payment',
+    weight: -100000,
+  });
+  assert.strictEqual(r.status, 201);
+  assert.strictEqual(r.body.attestation.weight, 8, 'a positive kind cannot carry a negative weight');
+
+  const after = await req('GET', `/api/agents/${agentId}`);
+  assert.ok(
+    after.body.agent.score >= baseline.body.agent.score,
+    'submitting a clean_payment must never lower an agent score'
+  );
+});
+
+test('a signed attestation cannot supply its own weight either', async () => {
+  const { id: issuerId, apiKey } = await registerIssuer('weight-signer');
+  const { pem, privateKey } = keypair();
+  const keyRes = await req(
+    'POST',
+    `/api/issuers/${issuerId}/keys`,
+    { public_key: pem },
+    { 'X-Issuer-Key': apiKey }
+  );
+  const keyId = keyRes.body.key.id;
+
+  const agentId = await newAgent('weight-signed');
+  const issued_at = new Date().toISOString();
+  const fields = {
+    agent_id: agentId,
+    kind: 'task_completed',
+    amount: 0,
+    note: null,
+    issuer_id: issuerId,
+    issuer_key_id: keyId,
+    issued_at,
+  };
+  const signature = crypto
+    .sign(null, Buffer.from(canonicalPayload(fields)), privateKey)
+    .toString('base64');
+
+  // A valid signature over the canonical fields, plus an inflated weight that
+  // the signature does not cover.
+  const r = await req(
+    'POST',
+    `/api/agents/${agentId}/attestations`,
+    { kind: 'task_completed', weight: 99999, issuer_id: issuerId, issuer_key_id: keyId, signature, issued_at },
+    { 'X-Issuer-Key': apiKey }
+  );
+  assert.strictEqual(r.status, 201);
+  assert.strictEqual(r.body.attestation.verification_status, 'verified');
+  assert.strictEqual(
+    r.body.attestation.weight,
+    6,
+    'weight must be derived from kind even when the submission is verified'
+  );
+});

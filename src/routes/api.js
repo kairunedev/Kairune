@@ -921,12 +921,15 @@ router.post(
     ).length;
 
     // Unsigned (backward-compatible) path.
+    //
+    // `weight` is deliberately not read from the body: it is derived from `kind`
+    // server-side. This path needs no credentials, so honouring a caller's
+    // weight let anyone set any agent's score to anything.
     if (present === 0) {
       const result = await attestationService.addAttestation(agent.id, {
         kind: req.body.kind,
         amount: req.body.amount,
         note: req.body.note,
-        weight: req.body.weight,
         verification_status: 'unverified',
       });
       return res.status(201).json(result);
@@ -1004,11 +1007,13 @@ router.post(
       throw err;
     }
 
+    // Weight is derived from `kind`, not taken from the body. A signature would
+    // not have protected it anyway — `weight` is not in CANONICAL_FIELDS, so it
+    // was the one field a verified submission could alter freely.
     const result = await attestationService.addAttestation(agent.id, {
       kind: req.body.kind,
       amount: req.body.amount,
       note: req.body.note,
-      weight: req.body.weight,
       verification_status: outcome.status,
       issuer_id,
       issuer_key_id,

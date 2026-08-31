@@ -17,8 +17,19 @@ function nowIso() {
 
 /**
  * Add an attestation for an agent and recalculate the score automatically.
+ *
+ * Weight is NOT an input. It is derived from `kind` via KIND_WEIGHTS, which is
+ * the only place the price of a signal is set.
+ *
+ * This used to accept a caller-supplied weight and pass it through verbatim.
+ * Because the unsigned submission path is public and `weight` was never part of
+ * CANONICAL_FIELDS (so a signature never covered it either), anyone could post
+ * one unauthenticated attestation with an arbitrary weight and move any agent's
+ * score to either end of the range — max it out, or zero it. A trust score that
+ * any anonymous caller can set is not a trust score.
+ *
  * @param {string} agentId
- * @param {{kind:string, amount?:number, note?:string, weight?:number,
+ * @param {{kind:string, amount?:number, note?:string,
  *          verification_status?:string, issuer_id?:string, issuer_key_id?:string,
  *          created_at?:string}} input
  * @returns {Promise<{attestation:object, agent:object}>}
@@ -29,7 +40,6 @@ async function addAttestation(
     kind,
     amount = 0,
     note = null,
-    weight,
     verification_status = 'unverified',
     issuer_id = null,
     issuer_key_id = null,
@@ -56,7 +66,9 @@ async function addAttestation(
     id: crypto.randomUUID(),
     agent_id: agent.id,
     kind,
-    weight: typeof weight === 'number' ? weight : KIND_WEIGHTS[kind],
+    // Server-derived, never caller-supplied. `kind` is already validated above,
+    // so this is always a known weight.
+    weight: KIND_WEIGHTS[kind],
     amount: Number(amount) || 0,
     note,
     verification_status:
