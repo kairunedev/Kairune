@@ -648,6 +648,7 @@ module.exports = {
   grantPermission,
   revokePermission,
   listPermissions,
+  getPermissionOr404,
   addPayee,
   listPayees,
   removePayee,

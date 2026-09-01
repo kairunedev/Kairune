@@ -274,6 +274,67 @@ async function verifyProof(agentId, nonce, signature) {
 }
 
 /**
+ * Authorize a request that changes an agent's spending authority.
+ *
+ * Two states, and the difference is entirely the operator's choice:
+ *
+ * - **Unlocked (`owner_locked_at` NULL)** — allowed with no credentials. This is
+ *   the state every agent starts in and the state the public console depends on:
+ *   a visitor can register an agent, grant it a budget and spend against it
+ *   without holding a key. Nothing here regressed.
+ * - **Locked** — the caller must present a fresh wallet proof. A stored proof is
+ *   deliberately *not* enough: `proofStatus` only says the wallet was controlled
+ *   at some past moment, so treating it as authorization would let anyone act on
+ *   any agent that had ever proved itself. What is required is a signature
+ *   produced now, over a nonce this server minted, which only the wallet holder
+ *   can produce.
+ *
+ * The proof travels as an `X-Owner-Proof: <nonce>:<signature>` header rather
+ * than in the body, so it does not collide with any endpoint's payload schema
+ * and the same guard works on DELETE (which has no body).
+ *
+ * `verifyProof` is reused verbatim, which means a proof presented here is
+ * single-use and consumed pass or fail — an attacker cannot grind signatures
+ * against a live challenge.
+ *
+ * @param {object} req express request
+ * @param {{id:string, owner_locked_at?:string|null}} agent the agent whose
+ *        authority is being changed
+ * @returns {Promise<boolean>} true when the request may proceed
+ * @throws {Error} 401 when the agent is locked and no valid fresh proof is given
+ */
+async function requireOwner(req, agent) {
+  // Unlocked is the default and it is not a failure state — it is the legacy
+  // behaviour, kept so this change breaks nothing that works today.
+  if (!agent || !agent.owner_locked_at) return true;
+
+  const raw = String(req.get('x-owner-proof') || '').trim();
+  if (!raw) {
+    throw httpError(
+      'This agent is owner-locked. Changing its spending authority requires a fresh ' +
+        'wallet proof: mint a nonce at POST /api/agents/:id/wallet-proof/challenge, sign ' +
+        'the returned message with the agent wallet, and resend with ' +
+        'X-Owner-Proof: <nonce>:<signature>.',
+      401
+    );
+  }
+
+  // `nonce:signature`. The signature is 0x + 130 hex and contains no colon, so
+  // splitting on the first colon is unambiguous.
+  const idx = raw.indexOf(':');
+  if (idx <= 0) {
+    throw httpError('X-Owner-Proof must be formatted as <nonce>:<signature>', 400);
+  }
+  const nonce = raw.slice(0, idx).trim();
+  const signature = raw.slice(idx + 1).trim();
+
+  // verifyProof throws 404/400/401 of its own for an unknown, expired or
+  // mismatched proof, which are the right answers here too.
+  await verifyProof(agent.id, nonce, signature);
+  return true;
+}
+
+/**
  * Proof status for an agent's *current* wallet.
  *
  * Looks up the pair, not the agent, so an agent that proved one wallet and then
@@ -336,6 +397,7 @@ module.exports = {
   recoverSigner,
   createChallenge,
   verifyProof,
+  requireOwner,
   proofStatus,
   proofMap,
 };

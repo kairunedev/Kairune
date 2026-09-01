@@ -636,6 +636,27 @@ async function setAgentStatus(id, status) {
 }
 
 /**
+ * Turn the owner lock on or off for an agent.
+ *
+ * Locking is what moves an agent from "anyone may adjust its budget" to "only
+ * the wallet holder may". The caller is responsible for having verified a fresh
+ * wallet proof first — this function only records the decision.
+ *
+ * @param {string} id
+ * @param {boolean} locked
+ * @returns {Promise<object|null>} the updated agent, or null when not found
+ */
+async function setOwnerLock(id, locked) {
+  const db = await getDb();
+  const ts = nowIso();
+  const res = await db.execute({
+    sql: `UPDATE agents SET owner_locked_at = ?, updated_at = ? WHERE id = ?`,
+    args: [locked ? ts : null, ts, id],
+  });
+  return res.rowsAffected ? getAgent(id) : null;
+}
+
+/**
  * Recalculate an agent's score from all its attestations and persist to the DB.
  * @param {string} id
  * @returns {Promise<object>}
@@ -805,6 +826,7 @@ module.exports = {
   MAX_COMPARE_CANDIDATES,
   getStats,
   setAgentStatus,
+  setOwnerLock,
   recalcAgent,
   deleteAgent,
   purgeExpiredDemos,

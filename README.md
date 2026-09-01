@@ -150,6 +150,20 @@ npm run dev
 | GET    | `/api/agents/:id/spend-summary`   | Spend totals by permission / category / payee |
 | GET    | `/api/spends/:sid/receipt`        | Public signed receipt for a spend    |
 | GET    | `/api/platform-key`               | Current receipt-signing public key   |
+| POST   | `/api/agents/:id/lock`            | Owner-lock an agent (needs a wallet proof) |
+| POST   | `/api/agents/:id/unlock`          | Remove the owner lock (needs a wallet proof) |
+
+**Owner lock.** By default the permission routes take no credentials, and a
+permission id is public — so anyone who reads one can grant, spend, re-scope or
+revoke against that agent. Locking an agent to its wallet closes that: prove
+control once via `/api/agents/:id/wallet-proof/challenge`, then `POST
+/api/agents/:id/lock`. After that, every mutating permission route for the agent
+requires a fresh EIP-191 proof in `X-Owner-Proof: <nonce>:<signature>` and
+refuses with `401` without one. Proofs are single-use and bound to a single
+agent, so a captured proof is not a standing key. Reads and
+`/spends/preview` stay open so a payment rail can still get a go/no-go signal.
+This is opt-in: unlocked agents behave exactly as they did before, and the agent
+payload reports `owner_locked` so a payer can tell the difference.
 
 Both spend-history endpoints accept `since`, `until`, `payee` and `idempotency_key`
 filters plus `limit`/`offset`. `until` is exclusive so consecutive windows tile

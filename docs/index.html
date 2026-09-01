@@ -89,8 +89,11 @@ curl https://kairune.online/api/agents/AGENT_ID</pre>
         <li><code>GET /agents/:id/permissions</code></li>
         <li><code>POST /agents/:id/permissions</code> — <span class="m">category, ceiling, counterparty_policy, payees, expires_in_s</span></li>
         <li><code>POST /permissions/:pid/revoke</code></li>
+        <li><code>POST /agents/:id/lock</code> — <span class="m">nonce, signature</span></li>
+        <li><code>POST /agents/:id/unlock</code> — <span class="m">nonce, signature</span></li>
       </ul>
       <p class="docs-note">Ceiling is capped by trust tier. Periods: day | week | month.</p>
+      <p class="docs-note"><b>Owner lock.</b> By default these routes take no credentials, so anyone holding a permission id — which is public — can grant, spend, re-scope or revoke. Lock an agent to its wallet to stop that: prove control once at <code>POST /agents/:id/wallet-proof/challenge</code>, then <code>POST /agents/:id/lock</code>. From then on every mutating permission route for that agent needs a fresh proof in <code>X-Owner-Proof: &lt;nonce&gt;:&lt;signature&gt;</code>, and refuses with <code>401</code> without one. Proofs are single-use and bound to one agent, so a captured one is not a standing key. Reads and <code>/spends/preview</code> stay open. Opt-in: unlocked agents behave exactly as before, and <code>owner_locked</code> on the agent payload says which is which.</p>
     </article>
     <article class="docs-card">
       <h2>Payee scope</h2>

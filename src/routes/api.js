@@ -21,6 +21,8 @@
  *   DELETE /api/agents/:id                    delete an agent
  *   GET    /api/agents/:id/attestations       attestation history
  *   POST   /api/agents/:id/attestations       add attestation (triggers rescore)
+ *   POST   /api/agents/:id/lock                owner-lock an agent (needs a fresh wallet proof)
+ *   POST   /api/agents/:id/unlock              remove the owner lock (needs a fresh wallet proof)
  *   GET    /api/agents/:id/permissions        list permissions
  *   POST   /api/agents/:id/permissions        grant permission
  *   POST   /api/permissions/:pid/revoke       revoke permission
@@ -173,6 +175,25 @@ router.get('/meta', (req, res) => {
     wallet_proof_challenge_endpoint: '/api/agents/:id/wallet-proof/challenge',
     wallet_proof_endpoint: '/api/agents/:id/wallet-proof',
     wallet_proof_ttl_s: walletProof.CHALLENGE_TTL_S,
+    // Owner lock — opt-in. Unlocked agents accept unauthenticated permission
+    // writes (what the public console uses); locked agents require a fresh
+    // wallet proof for any change to their spending authority.
+    owner_lock: {
+      opt_in: true,
+      default: 'unlocked',
+      lock_endpoint: '/api/agents/:id/lock',
+      unlock_endpoint: '/api/agents/:id/unlock',
+      proof_header: 'X-Owner-Proof: <nonce>:<signature>',
+      protects: [
+        'POST /api/agents/:id/permissions',
+        'POST /api/permissions/:pid/revoke',
+        'POST /api/permissions/:pid/spends',
+        'POST /api/permissions/:pid/expiry',
+        'POST /api/permissions/:pid/counterparty-policy',
+        'POST /api/permissions/:pid/payees',
+        'DELETE /api/permissions/:pid/payees/:ref',
+      ],
+    },
     // ERC-8126 derived risk — verifiable interoperability view, NOT a
     // compliance claim. Kairune does NOT implement ETV/MCV/SCV/WAV/WV,
     // PDV/ZKP, or ERC-8004 tokenId. This is an inverted mapping so an
@@ -349,7 +370,10 @@ router.get(
     ]);
     const derivedRisk = trustScore.erc8126DerivedRiskScore(agent.score);
     res.json({
-      agent,
+      // `owner_locked` as an explicit boolean alongside the raw timestamp: a
+      // payer reading this wants a yes/no on whether this agent's budget can be
+      // altered by anyone who knows its permission id.
+      agent: { ...agent, owner_locked: Boolean(agent.owner_locked_at) },
       erc8126: {
         derived_risk_score: derivedRisk,
         derived_risk_tier: trustScore.erc8126RiskTier(derivedRisk),
@@ -763,6 +787,61 @@ router.post(
   })
 );
 
+// Owner lock — opt in to requiring a wallet proof for spending-authority changes.
+//
+// Until an agent is locked, its permission routes accept unauthenticated writes.
+// That is what makes the public console work: a visitor can grant a budget and
+// spend against it without holding a key. It also means anyone can revoke, drain
+// or re-scope someone else's grant, because a permission id is public.
+//
+// Locking is the operator's answer to that. It takes a fresh wallet proof to
+// turn on and a fresh one to turn off, so only the wallet holder can change the
+// setting — and once on, every mutating permission action for that agent needs a
+// proof too. Opt-in rather than mandatory because making it mandatory would
+// strand every agent already registered, none of which has proved a wallet.
+router.post(
+  '/agents/:id/lock',
+  wrap(async (req, res) => {
+    requireFields(req.body, ['nonce', 'signature']);
+    const agent = await agentService.getAgent(req.params.id);
+    if (!agent) {
+      const err = new Error('Agent not found');
+      err.status = 404;
+      throw err;
+    }
+    // Self-authenticating: only the wallet holder can produce this.
+    const proof = await walletProof.verifyProof(agent.id, req.body.nonce, req.body.signature);
+    const updated = await agentService.setOwnerLock(agent.id, true);
+    res.json({
+      locked: true,
+      handle: updated.handle,
+      owner_locked_at: updated.owner_locked_at,
+      wallet: proof.wallet,
+      note:
+        'Mutating permission routes for this agent now require ' +
+        'X-Owner-Proof: <nonce>:<signature>.',
+    });
+  })
+);
+
+router.post(
+  '/agents/:id/unlock',
+  wrap(async (req, res) => {
+    requireFields(req.body, ['nonce', 'signature']);
+    const agent = await agentService.getAgent(req.params.id);
+    if (!agent) {
+      const err = new Error('Agent not found');
+      err.status = 404;
+      throw err;
+    }
+    // Unlocking is as sensitive as locking: it removes a protection, so it takes
+    // the same proof. An unauthenticated unlock would make the lock decorative.
+    await walletProof.verifyProof(agent.id, req.body.nonce, req.body.signature);
+    const updated = await agentService.setOwnerLock(agent.id, false);
+    res.json({ locked: false, handle: updated.handle, owner_locked_at: null });
+  })
+);
+
 // Proof status — public read. A payer deciding whether to release funds wants
 // to know whether the address it is about to pay was ever proven, and that
 // answer is not a secret.
@@ -1065,6 +1144,27 @@ router.delete(
 // ---------------------------------------------------------------------------
 // Permissions
 // ---------------------------------------------------------------------------
+
+/**
+ * Authorize a change to an existing permission.
+ *
+ * The `/permissions/:pid/...` routes are addressed by permission id and never
+ * name the agent, so the owning agent has to be resolved before the owner lock
+ * can be checked. A permission id is public (it is returned by
+ * `GET /agents/:id/permissions`), which is exactly why possessing one cannot be
+ * treated as authority on its own.
+ *
+ * @param {object} req express request
+ * @param {string} permissionId
+ * @returns {Promise<object>} the permission row, once the caller is authorized
+ */
+async function authorizePermissionChange(req, permissionId) {
+  const permission = await permissionService.getPermissionOr404(permissionId);
+  const agent = await agentService.getAgent(permission.agent_id);
+  await walletProof.requireOwner(req, agent);
+  return permission;
+}
+
 router.get(
   '/agents/:id/permissions',
   wrap(async (req, res) => {
@@ -1092,6 +1192,7 @@ router.post(
       err.status = 404;
       throw err;
     }
+    await walletProof.requireOwner(req, agent);
     const permission = await permissionService.grantPermission(agent.id, {
       category: req.body.category,
       ceiling: req.body.ceiling,
@@ -1111,6 +1212,7 @@ router.post(
 router.post(
   '/permissions/:pid/revoke',
   wrap(async (req, res) => {
+    await authorizePermissionChange(req, req.params.pid);
     const permission = await permissionService.revokePermission(req.params.pid);
     if (!permission) {
       const err = new Error('Active permission not found');
@@ -1150,6 +1252,7 @@ router.post(
   '/permissions/:pid/payees',
   wrap(async (req, res) => {
     requireFields(req.body, ['counterparty']);
+    await authorizePermissionChange(req, req.params.pid);
     const payee = await permissionService.addPayee(req.params.pid, req.body.counterparty, {
       label: req.body.label,
     });
@@ -1160,6 +1263,7 @@ router.post(
 router.delete(
   '/permissions/:pid/payees/:ref',
   wrap(async (req, res) => {
+    await authorizePermissionChange(req, req.params.pid);
     const removed = await permissionService.removePayee(req.params.pid, req.params.ref);
     if (!removed) {
       const err = new Error('Payee not found on this allowlist');
@@ -1177,6 +1281,7 @@ router.post(
   '/permissions/:pid/expiry',
   wrap(async (req, res) => {
     const body = req.body || {};
+    await authorizePermissionChange(req, req.params.pid);
     const permission = await permissionService.setExpiry(req.params.pid, {
       expires_in_s: body.expires_in_s,
       expires_at: body.expires_at,
@@ -1191,6 +1296,7 @@ router.post(
   '/permissions/:pid/counterparty-policy',
   wrap(async (req, res) => {
     requireFields(req.body, ['counterparty_policy']);
+    await authorizePermissionChange(req, req.params.pid);
     const permission = await permissionService.setCounterpartyPolicy(
       req.params.pid,
       req.body.counterparty_policy,
@@ -1277,6 +1383,11 @@ router.post(
   '/permissions/:pid/spends',
   wrap(async (req, res) => {
     requireFields(req.body, ['amount']);
+    // Releasing funds is the action the lock exists to protect, so it is gated
+    // like the rest. The dry-run `/spends/preview` stays open: it writes nothing
+    // and consumes no budget, so a payment rail can still get a go / no-go
+    // signal without holding the owner's wallet.
+    await authorizePermissionChange(req, req.params.pid);
     // Idempotency key: standard `Idempotency-Key` header wins, else body field.
     // Retries that reuse the same key never double-charge the budget.
     const idempotencyKey = req.get('Idempotency-Key') || req.body.idempotency_key;

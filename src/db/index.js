@@ -108,8 +108,28 @@ async function initSchema(c) {
   await ensureAttestationColumns(c);
   await ensureSpendColumns(c);
   await ensurePermissionColumns(c);
+  await ensureAgentColumns(c);
   await ensureSpendEventsConstraint(c);
   await ensureIndexMigration(c);
+}
+
+/**
+ * Idempotently add the opt-in owner-lock column to an existing agents table.
+ * CREATE TABLE IF NOT EXISTS will not alter a table that already exists, so the
+ * column is added via PRAGMA table_info + ALTER.
+ *
+ * NULL means "unlocked", so every agent that existed before this feature keeps
+ * behaving exactly as it did: the permission routes stay open for it. Only an
+ * agent whose operator has proved wallet control and explicitly locked it starts
+ * requiring a proof.
+ * @param {import('@libsql/client').Client} c
+ */
+async function ensureAgentColumns(c) {
+  const info = await c.execute('PRAGMA table_info(agents)');
+  const existing = new Set(info.rows.map((r) => r.name));
+  if (!existing.has('owner_locked_at')) {
+    await c.execute('ALTER TABLE agents ADD COLUMN owner_locked_at TEXT');
+  }
 }
 
 /**

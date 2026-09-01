@@ -16,6 +16,12 @@ CREATE TABLE IF NOT EXISTS agents (
                   CHECK (status IN ('active', 'suspended')),
   score         INTEGER NOT NULL DEFAULT 0,    -- 0..1000, computed result
   tier          INTEGER NOT NULL DEFAULT 0,    -- 0..4
+  -- Opt-in owner lock (ISO8601). NULL = open: the permission routes accept
+  -- unauthenticated writes, which is what the public demo relies on. Once an
+  -- operator proves wallet control and locks the agent, every mutating
+  -- permission action for it requires a fresh EIP-191 proof. Additive and
+  -- backward compatible: agents created before this feature read as unlocked.
+  owner_locked_at TEXT,
   created_at    TEXT NOT NULL,
   updated_at    TEXT NOT NULL
 );
