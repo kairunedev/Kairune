@@ -1024,6 +1024,16 @@ router.post(
         err.status = 401;
         throw err;
       }
+      // LLM-context surface. `note` is served verbatim on every
+      // GET /api/agents/:id and is therefore readable by any AI consumer that
+      // treats an agent's history as context. Anonymously appending a
+      // free-text note to another agent's history is how instruction-shaped
+      // text reaches a model, while a bare `kind` never carries prose.
+      // So a note to a locked agent must prove wallet control, while a
+      // note-less attestation is still 201 for compatibility.
+      if (req.body.note != null && String(req.body.note).trim() !== '') {
+        await walletProof.requireOwner(req, agent);
+      }
       const result = await attestationService.addAttestation(agent.id, {
         kind: req.body.kind,
         amount: req.body.amount,

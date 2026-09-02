@@ -123,11 +123,68 @@ function requireAdmin(req) {
     const b = Buffer.from(key);
     if (a.length === b.length && crypto.timingSafeEqual(a, b)) return true;
   }
-  // Route-agnostic on purpose: this guard fronts several operator endpoints, so
-  // naming any one of them here sends callers chasing the wrong route.
-  const err = new Error('Admin key required for this endpoint');
+  const err = new Error('Admin key required to delete agents');
   err.status = 401;
   throw err;
+}
+
+// ---------------------------------------------------------------------------
+// Free-text field sanitisation — the NOTE / SPEND-NOTE surface
+// ---------------------------------------------------------------------------
+//
+// XSS is already handled at the rendering layer (escapeText/esc over every
+// innerHTML sink, application/json; charset=utf-8, nosniff). The remaining
+// concern is LLM-context pollution: `note` is served verbatim in
+// GET /api/agents/:id and attestation history, and an AI consumer that reads
+// that JSON as context can mistake attacker-supplied prose for an instruction.
+//
+// So this function is intentionally *not* an HTML sanitiser. It enforces three
+// properties that make prompt-framing harder without touching the read path:
+//
+//   1. Short — 500 chars max. Today 100k is accepted (only 1M hits Express's
+//      body limit). A useful human note fits well under 500; an exfiltrated
+//      payload does not.
+//   2. Flat — strip C0/C1 controls, zero-width/bidi/formatting codepoints, and
+//      collapse all whitespace runs (including embedded newlines) to a single
+//      ASCII space. No block breaks means no fake `SYSTEM:` preamble.
+//   3. Plain — reject `<>` brackets and backticks. That blocks tag-shaped
+//      framing (`<|im_start|>`, `[INST]`, `<system>`) without needing a
+//      continually-outdated blocklist of model-specific tokens.
+
+const NOTE_MAX = 500;
+
+// Codepoints the normaliser drops. Keeping the set explicit rather than
+// reaching for a Unicode property escape makes the contract auditable without
+// needing to know which ES version the runtime supports.
+//
+//   C0 (\\u0000-\\u001f) + DEL, C1 (\\u007f-\\u009f)
+//   Zero-width + word-joiner + BOM, bidi isolates/overrides, soft hyphen
+const FORMATTING_RE =
+  /[\u0000-\u001f\u007f-\u009f\u200b-\u200f\u202a-\u202e\u2060-\u206f\ufeff\u00ad]/g;
+
+function assertValidNote(raw) {
+  if (raw == null || raw === '') return null;
+  if (typeof raw !== 'string') {
+    const err = new Error('Note must be a string');
+    err.status = 400;
+    throw err;
+  }
+  let s = raw.replace(FORMATTING_RE, '');
+  // Brackets and backticks are never legitimate in a payment/attestation note
+  // and they are the characters every instruction-framing syntax relies on.
+  if (/[<>`]/.test(s)) {
+    const err = new Error('Note must not contain <, > or `');
+    err.status = 400;
+    throw err;
+  }
+  s = s.replace(/\s+/g, ' ').trim();
+  if (!s) return null;
+  if (s.length > NOTE_MAX) {
+    const err = new Error(`Note must be at most ${NOTE_MAX} characters`);
+    err.status = 400;
+    throw err;
+  }
+  return s;
 }
 
 module.exports = {
@@ -137,6 +194,8 @@ module.exports = {
   assertValidRobinhoodWallet,
   isDemoAgent,
   requireAdmin,
+  assertValidNote,
+  NOTE_MAX,
   ROBINHOOD_CHAIN_ID,
   ROBINHOOD_CHAIN_NAME,
   EVM_ADDRESS_RE,

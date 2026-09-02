@@ -8,6 +8,7 @@ const crypto = require('crypto');
 const { getDb } = require('../db');
 const { KIND_WEIGHTS } = require('./trustScore');
 const agentService = require('./agentService');
+const { assertValidNote } = require('../middleware/moderation');
 
 const VALID_KINDS = Object.keys(KIND_WEIGHTS);
 
@@ -70,7 +71,7 @@ async function addAttestation(
     // so this is always a known weight.
     weight: KIND_WEIGHTS[kind],
     amount: Number(amount) || 0,
-    note,
+    note: assertValidNote(note),
     verification_status:
       verification_status === 'verified' ? 'verified' : 'unverified',
     issuer_id: verification_status === 'verified' ? issuer_id : null,

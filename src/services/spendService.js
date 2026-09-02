@@ -13,6 +13,7 @@ const crypto = require('crypto');
 const { getDb } = require('../db');
 const agentService = require('./agentService');
 const webhookService = require('./webhookService');
+const { assertValidNote } = require('../middleware/moderation');
 const { isExpired, expiresInSeconds } = require('./permissionService');
 const receiptService = require('./receiptService');
 
@@ -637,7 +638,7 @@ async function authorizeSpend(
     permission_id: permissionId,
     agent_id: permission.agent_id,
     amount: value,
-    note,
+    note: assertValidNote(note),
     // The payee exactly as named on the charge (trimmed); NULL when the spend
     // did not name one. Part of the signed receipt, so a receipt proves not
     // just how much moved but WHO it moved to.
