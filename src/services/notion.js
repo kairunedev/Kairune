@@ -106,6 +106,10 @@ async function createDatabase({ parent, title, properties, icon }) {
   return notionFetch('/v1/databases', { method: 'POST', body });
 }
 
+async function updateDataSource(dataSourceId, properties) {
+  return notionFetch(`/v1/data_sources/${dataSourceId}`, { method: 'PATCH', body: { properties } });
+}
+
 async function appendBlocks(blockId, children) {
   return notionFetch(`/v1/blocks/${blockId}/children`, { method: 'PATCH', body: { children } });
 }
@@ -122,5 +126,6 @@ module.exports = {
   getPage,
   createPage,
   createDatabase,
+  updateDataSource,
   appendBlocks,
 };

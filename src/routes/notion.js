@@ -55,53 +55,70 @@ router.post(
     // Verify parent is reachable.
     await notion.getPage(parent_page_id);
 
-    // Title property for both databases must be called "Name" (type: title).
-    const shipProps = {
-      Name: { title: {} },
-      Commit: { rich_text: {} },
-      Tag: { select: { options: [
-        { name: 'trust', color: 'green' },
-        { name: 'spend', color: 'blue' },
-        { name: 'brand', color: 'purple' },
-        { name: 'infra', color: 'gray' },
-        { name: 'other', color: 'default' },
-      ] } },
-      Summary: { rich_text: {} },
-      ShippedAt: { date: {} },
-    };
-    const queueProps = {
-      Name: { title: {} },
-      Kind: { select: { options: [
-        { name: 'tweet', color: 'blue' },
-        { name: 'brand-copy', color: 'purple' },
-        { name: 'changelog', color: 'green' },
-        { name: 'other', color: 'default' },
-      ] } },
-      Status: { select: { options: [
-        { name: 'draft', color: 'yellow' },
-        { name: 'ready', color: 'green' },
-        { name: 'posted', color: 'gray' },
-        { name: 'skipped', color: 'red' },
-      ] } },
-      Body: { rich_text: {} },
-      DueAt: { date: {} },
+    // The 2026-03-11 API separates a database (a container) from its
+    // data_sources (the queryable schema). createDatabase returns the container
+    // id; row writes and queries need the child data_source id, and the
+    // `Name` title is the only property it creates regardless of what you ask
+    // for — extra columns must be added by PATCHing the data_source afterwards.
+    // Both of those are bugs if you assume the older single-id model, so this
+    // helper collapses create -> resolve -> extend into one honest result.
+    const buildSchema = async (titleText, props) => {
+      const db = await notion.createDatabase({
+        parent: { type: 'page_id', page_id: parent_page_id },
+        title: [{ type: 'text', text: { content: titleText } }],
+        properties: { Name: props.Name },
+      });
+      const dsId = db.data_sources && db.data_sources[0] && db.data_sources[0].id;
+      if (!dsId) {
+        const err = new Error('Notion did not return a data_source for the new database');
+        err.status = 502;
+        throw err;
+      }
+      // Add every non-title column in one PATCH so the schema matches what
+      // /ship-log and /queue write.
+      const extra = Object.fromEntries(
+        Object.entries(props).filter(([k]) => k !== 'Name')
+      );
+      if (Object.keys(extra).length) {
+        await notion.updateDataSource(dsId, extra);
+      }
+      return { database_id: db.id, data_source_id: dsId, url: db.url };
     };
 
-    const shipDb = await notion.createDatabase({
-      parent: { type: 'page_id', page_id: parent_page_id },
-      title: [{ type: 'text', text: { content: `${prefix} — Ship Log` } }],
-      properties: shipProps,
-    });
-    const queueDb = await notion.createDatabase({
-      parent: { type: 'page_id', page_id: parent_page_id },
-      title: [{ type: 'text', text: { content: `${prefix} — Content Queue` } }],
-      properties: queueProps,
-    });
+    const [shipLog, contentQueue] = await Promise.all([
+      buildSchema(`${prefix} — Ship Log`, {
+        Name: { title: {} },
+        Commit: { rich_text: {} },
+        Tag: { select: { options: [
+          { name: 'trust', color: 'green' },
+          { name: 'spend', color: 'blue' },
+          { name: 'brand', color: 'purple' },
+          { name: 'infra', color: 'gray' },
+          { name: 'other', color: 'default' },
+        ] } },
+        Summary: { rich_text: {} },
+        ShippedAt: { date: {} },
+      }),
+      buildSchema(`${prefix} — Content Queue`, {
+        Name: { title: {} },
+        Kind: { select: { options: [
+          { name: 'tweet', color: 'blue' },
+          { name: 'brand-copy', color: 'purple' },
+          { name: 'changelog', color: 'green' },
+          { name: 'other', color: 'default' },
+        ] } },
+        Status: { select: { options: [
+          { name: 'draft', color: 'yellow' },
+          { name: 'ready', color: 'green' },
+          { name: 'posted', color: 'gray' },
+          { name: 'skipped', color: 'red' },
+        ] } },
+        Body: { rich_text: {} },
+        DueAt: { date: {} },
+      }),
+    ]);
 
-    res.status(201).json({
-      ship_log: { id: shipDb.id, url: shipDb.url },
-      content_queue: { id: queueDb.id, url: queueDb.url },
-    });
+    res.status(201).json({ ship_log: shipLog, content_queue: contentQueue });
   }),
 );
 
