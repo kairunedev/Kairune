@@ -13,6 +13,7 @@ const express = require('express');
 const compression = require('compression');
 const { Resvg } = require('@resvg/resvg-js');
 const apiRouter = require('./src/routes/api');
+const notionRouter = require('./src/routes/notion');
 const agentService = require('./src/services/agentService');
 const attestationService = require('./src/services/attestationService');
 const trustScore = require('./src/services/trustScore');
@@ -177,6 +178,7 @@ app.get('/health', (req, res) => {
 
 // REST API — trust marks, agents, attestations, permissions.
 app.use('/api', apiRouter);
+app.use('/api', notionRouter);
 
 // Static assets: long cache for /assets, no cache for HTML.
 app.use(

@@ -212,6 +212,21 @@ router.get('/meta', (req, res) => {
       endpoints: ['/api/agents/:id/erc8126', '/api/erc8126/agents/:id'],
       note: 'Same derived risk; adds per-type breakdown (ETV/MCV/SCV/WAV not_implemented, WV partial via EIP-191). No ZKP, no ERC-8004 agentId.',
     },
+    // Notion sidecar — push-only ship log + content queue. The registry/spends
+    // stay in libSQL; Notion only stores the changelog and tweet drafts that
+    // disappeared in chat. No token in code — read from NOTION_API_KEY at call
+    // time, writes gated by X-Admin-Key, token never echoed.
+    notion_sidecar: {
+      enabled: Boolean(process.env.NOTION_API_KEY),
+      notion_version: '2026-03-11',
+      status_endpoint: '/api/notion/status',
+      setup_endpoint: '/api/notion/setup',
+      ship_log_endpoint: '/api/notion/ship-log',
+      queue_endpoint: '/api/notion/queue',
+      query_endpoint: '/api/notion/query',
+      data_source_api: '/v1/data_sources/{id}/query',
+      note: 'Push-only; registry stays in libSQL. Set NOTION_API_KEY env (never committed).',
+    },
   });
 });
 
