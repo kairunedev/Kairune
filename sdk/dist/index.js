@@ -1,4 +1,3 @@
-'use strict';
 "use strict";
 var __defProp = Object.defineProperty;
 var __getOwnPropDesc = Object.getOwnPropertyDescriptor;
@@ -51,15 +50,17 @@ function spendQueryString(q = {}, extra = {}) {
   const s = params.toString();
   return s ? `?${s}` : "";
 }
-var Kairune = class {
+var Kairune = class _Kairune {
   baseUrl;
   adminKey;
   issuerKey;
+  signOwnerMessage;
   _fetch;
   constructor(opts = {}) {
     this.baseUrl = (opts.baseUrl || "https://kairune.online").replace(/\/$/, "");
     this.adminKey = opts.adminKey || "";
     this.issuerKey = opts.issuerKey || "";
+    this.signOwnerMessage = opts.signOwnerMessage;
     this._fetch = opts.fetch || globalThis.fetch;
   }
   // -------------------------------------------------------------------------
@@ -192,6 +193,134 @@ var Kairune = class {
       "GET",
       `/agents/${encodeURIComponent(agentId)}/wallet-proof`
     );
+  }
+  // -------------------------------------------------------------------------
+  // Owner lock — opt-in protection over an agent's spending authority
+  // -------------------------------------------------------------------------
+  /**
+   * Is this agent owner-locked?
+   *
+   * A tiny wrapper around `getAgent` — the lock state lives on the agent row
+   * itself. No extra endpoint is needed and no credentials are required.
+   */
+  async getOwnerLock(agentId) {
+    const a = await this.getAgent(agentId);
+    return {
+      agent_id: a.id,
+      handle: a.handle,
+      locked: Boolean(a.owner_locked),
+      owner_locked_at: a.owner_locked_at ?? null,
+      wallet: a.wallet
+    };
+  }
+  /**
+   * Bind an agent to its wallet so only the wallet holder can change its
+   * spending authority.
+   *
+   * Requires `signOwnerMessage` on the client — locking is self-authenticating
+   * and proves you hold the address now, not that you held an admin key at
+   * some point. After this, an anonymous caller can still read the agent and
+   * preview a spend, but cannot grant it a budget, charge one, or revoke it.
+   */
+  async lockAgent(agentId) {
+    const proof = await this.proveOwnership(agentId);
+    return this.request(
+      "POST",
+      `/agents/${encodeURIComponent(agentId)}/lock`,
+      proof
+    );
+  }
+  /**
+   * Remove an agent's owner lock, returning it to the open default.
+   *
+   * Takes the same fresh proof as locking — an unauthenticated unlock would
+   * make the lock decorative.
+   */
+  async unlockAgent(agentId) {
+    const proof = await this.proveOwnership(agentId);
+    return this.request(
+      "POST",
+      `/agents/${encodeURIComponent(agentId)}/unlock`,
+      proof
+    );
+  }
+  /**
+   * Mint + sign one proof for an agent (`nonce:signature`).
+   *
+   * Useful when you want to hold the proof yourself — e.g. to sign once in a
+   * trusted process and pass the `X-Owner-Proof` string to an untrusted spend
+   * loop. A proof is single-use and is consumed whether the call it authorizes
+   * succeeds or fails.
+   */
+  async ownerProof(agentId) {
+    if (!this.signOwnerMessage) {
+      throw new Error(
+        "Kairune: this call needs a wallet proof. Pass `signOwnerMessage` to the constructor (a personal_sign over the challenge message)."
+      );
+    }
+    const ch = await this.requestWalletChallenge(agentId);
+    const sig = await this.signOwnerMessage(ch.message, ch);
+    if (typeof sig !== "string" || !/^0x[0-9a-fA-F]{130}$/.test(sig.trim())) {
+      throw new Error(
+        "Kairune: signOwnerMessage must return a 0x-prefixed 65-byte hex signature (r + s + v), got " + String(typeof sig)
+      );
+    }
+    return { nonce: ch.nonce, signature: sig.trim(), header: `${ch.nonce}:${sig.trim()}`, challenge: ch };
+  }
+  /**
+   * @internal Mint a proof while capturing the exact challenge that was signed.
+   */
+  async proveOwnership(agentId) {
+    const r = await this.ownerProof(agentId);
+    return { nonce: r.nonce, signature: r.signature };
+  }
+  /**
+   * @internal True for the 401 Kairune returns when an agent is owner-locked and
+   * the call carried no fresh proof. The guard runs before any state change, so
+   * catching this and retrying cannot double-apply the mutation.
+   */
+  static isOwnerLockError(e) {
+    return e instanceof KairuneError && e.status === 401 && /owner|proof|locked/i.test(e.message || "");
+  }
+  /**
+   * @internal Run a mutation, transparently satisfying an owner lock if the
+   * agent turns out to be locked and a signer is configured.
+   *
+   * Unlocked agents — the default — hit the happy path with zero extra calls:
+   * `run()` succeeds directly and no challenge is ever minted. Only on a 401
+   * owner-lock rejection does the SDK mint a proof and retry once. When no
+   * signer is configured the 401 is re-thrown so the caller learns the real
+   * requirement rather than seeing a silent fall-open.
+   *
+   * @param agentId the (possibly locked) agent whose authority is being changed
+   * @param run issues the request; receives the `X-Owner-Proof` header value
+   *        (empty string on the first, unproofed attempt)
+   */
+  async withOwnerProof(agentId, run) {
+    try {
+      return await run("");
+    } catch (e) {
+      if (!_Kairune.isOwnerLockError(e) || !this.signOwnerMessage) throw e;
+      const { header } = await this.ownerProof(agentId);
+      return run(header);
+    }
+  }
+  /**
+   * @internal Same as withOwnerProof, for permission-scoped routes. The server
+   * derives the agent from the permission, so the SDK does the same only on the
+   * retry path: a budget read resolves `agent_id`, then one fresh proof replays
+   * the call. The first attempt carried no side effect (the owner guard runs
+   * before any state change), so the replay cannot double-apply it.
+   */
+  async withOwnerProofForPermission(permissionId, run) {
+    try {
+      return await run("");
+    } catch (e) {
+      if (!_Kairune.isOwnerLockError(e) || !this.signOwnerMessage) throw e;
+      const budget = await this.getBudget(permissionId);
+      const { header } = await this.ownerProof(budget.agent_id);
+      return run(header);
+    }
   }
   /**
    * Pre-flight trust check before paying another agent.
@@ -345,10 +474,12 @@ var Kairune = class {
     const res = await this.request("POST", "/agents", input);
     return res.agent;
   }
-  /** Add an attestation (triggers rescore). */
   async attest(agentId, input) {
-    const res = await this.request("POST", `/agents/${agentId}/attestations`, input);
-    return res.attestation;
+    const r = await this.withOwnerProof(
+      agentId,
+      (ph) => this.request("POST", `/agents/${agentId}/attestations`, input, ph ? { "X-Owner-Proof": ph } : void 0)
+    );
+    return r.attestation;
   }
   /**
    * Grant a spending permission to an agent.
@@ -370,11 +501,17 @@ var Kairune = class {
    * to revoke it. Omit both for a grant that never expires.
    */
   async grantPermission(agentId, input) {
-    return this.request("POST", `/agents/${agentId}/permissions`, input);
+    return this.withOwnerProof(
+      agentId,
+      (ph) => this.request("POST", `/agents/${agentId}/permissions`, input, ph ? { "X-Owner-Proof": ph } : void 0)
+    );
   }
   /** Revoke a permission. */
   async revokePermission(permissionId) {
-    return this.request("POST", `/permissions/${permissionId}/revoke`);
+    return this.withOwnerProofForPermission(
+      permissionId,
+      (ph) => this.request("POST", `/permissions/${permissionId}/revoke`, {}, ph ? { "X-Owner-Proof": ph } : void 0)
+    );
   }
   /** List the payees allowlisted on a permission, plus its current policy. */
   async listPayees(permissionId) {
@@ -389,16 +526,21 @@ var Kairune = class {
    * not trust, so it is still refused by the trust gate until it registers.
    */
   async addPayee(permissionId, counterparty, input = {}) {
-    return this.request("POST", `/permissions/${permissionId}/payees`, {
-      counterparty,
-      ...input
-    });
+    return this.withOwnerProofForPermission(
+      permissionId,
+      (ph) => this.request("POST", `/permissions/${permissionId}/payees`, { counterparty, ...input }, ph ? { "X-Owner-Proof": ph } : void 0)
+    );
   }
   /** Remove a payee from a permission's allowlist (by row id or reference). */
   async removePayee(permissionId, reference) {
-    return this.request(
-      "DELETE",
-      `/permissions/${permissionId}/payees/${encodeURIComponent(reference)}`
+    return this.withOwnerProofForPermission(
+      permissionId,
+      (ph) => this.request(
+        "DELETE",
+        `/permissions/${permissionId}/payees/${encodeURIComponent(reference)}`,
+        void 0,
+        ph ? { "X-Owner-Proof": ph } : void 0
+      )
     );
   }
   /**
@@ -410,10 +552,10 @@ var Kairune = class {
    * via `payees` if the allowlist is still empty.
    */
   async setCounterpartyPolicy(permissionId, counterparty_policy, input = {}) {
-    return this.request("POST", `/permissions/${permissionId}/counterparty-policy`, {
-      counterparty_policy,
-      ...input
-    });
+    return this.withOwnerProofForPermission(
+      permissionId,
+      (ph) => this.request("POST", `/permissions/${permissionId}/counterparty-policy`, { counterparty_policy, ...input }, ph ? { "X-Owner-Proof": ph } : void 0)
+    );
   }
   /**
    * Set, extend, or clear a permission's expiry deadline.
@@ -427,7 +569,10 @@ var Kairune = class {
    * design, and re-granting is the explicit path back.
    */
   async setExpiry(permissionId, input = {}) {
-    return this.request("POST", `/permissions/${permissionId}/expiry`, input);
+    return this.withOwnerProofForPermission(
+      permissionId,
+      (ph) => this.request("POST", `/permissions/${permissionId}/expiry`, input, ph ? { "X-Owner-Proof": ph } : void 0)
+    );
   }
   // ---------------------------------------------------------------------------
   // Issuer requests (marketplace handshake)
@@ -479,14 +624,15 @@ var Kairune = class {
    */
   async spend(permissionId, input) {
     const { idempotencyKey, ...body } = input;
-    const headers = idempotencyKey ? { "idempotency-key": idempotencyKey } : void 0;
+    const idemHeader = idempotencyKey ? { "Idempotency-Key": idempotencyKey } : void 0;
+    const call = (ph) => this.request(
+      "POST",
+      `/permissions/${permissionId}/spends`,
+      body,
+      { ...idemHeader ?? {}, ...ph ? { "X-Owner-Proof": ph } : {} }
+    );
     try {
-      const res = await this.request(
-        "POST",
-        `/permissions/${permissionId}/spends`,
-        body,
-        headers
-      );
+      const res = await this.withOwnerProofForPermission(permissionId, call);
       return { approved: true, ...res };
     } catch (e) {
       if (e instanceof KairuneError && (e.status === 409 || e.status === 429)) {

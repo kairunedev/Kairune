@@ -23,7 +23,7 @@
  * else console.log('blocked:', result.error)
  * ```
  */
-export interface KairuneOptions {
+interface KairuneOptions {
     /** Base URL of the Kairune API. Default: https://kairune.online */
     baseUrl?: string;
     /** Admin key for write operations (spend, grant, attest, webhooks). */
@@ -32,8 +32,32 @@ export interface KairuneOptions {
     issuerKey?: string;
     /** Custom fetch implementation (optional, defaults to global fetch). */
     fetch?: typeof fetch;
+    /**
+     * Signs a Kairune wallet challenge so the SDK can mint an `X-Owner-Proof`
+     * on your behalf.
+     *
+     * Only needed to MUTATE a locked agent's spending authority: lock it, unlock
+     * it, or spend/revoke/extend a permission it holds. Reads never need it, and
+     * unlocked agents never need it either — this is an opt-in protection.
+     *
+     * The message is the exact string Kairune returns from
+     * `POST /agents/:id/wallet-proof/challenge`. Sign it verbatim with EIP-191
+     * `personal_sign` — never hash it again, never reformat it. Return a
+     * 0x-prefixed 65-byte signature (r + s + v).
+     *
+     * Works with a local key, a signer client, or a remote signing RPC; may be
+     * async. Whatever you use, the private key stays on your side: only the
+     * signature and the nonce it covers are sent to Kairune.
+     *
+     * ```ts
+     * import { privateKeyToAccount } from 'viem/accounts'
+     * const account = privateKeyToAccount(process.env.AGENT_KEY as `0x${string}`)
+     * const k = new Kairune({ signOwnerMessage: (msg) => account.signMessage({ message: msg }) })
+     * ```
+     */
+    signOwnerMessage?: (message: string, challenge: WalletChallenge) => string | Promise<string>;
 }
-export interface Agent {
+interface Agent {
     id: string;
     handle: string;
     wallet: string;
@@ -44,6 +68,15 @@ export interface Agent {
     created_at: string;
     updated_at: string;
     breakdown?: Record<string, number>;
+    /**
+     * True when the operator has bound this agent to its wallet with an EIP-191
+     * proof, so every route that changes its spending authority now demands a
+     * fresh `X-Owner-Proof`. Opt-in; `false` is the default and the legacy
+     * behaviour. Absent on deployments predating the feature.
+     */
+    owner_locked?: boolean;
+    /** When the lock was applied, or `null` when the agent is unlocked. */
+    owner_locked_at?: string | null;
 }
 /**
  * Payee scope for a permission — WHO the budget may pay.
@@ -56,9 +89,9 @@ export interface Agent {
  * `allowlist` implies `required`. Neither replaces the trust gate: an
  * allowlisted payee that starts failing its trust check is still refused.
  */
-export type CounterpartyPolicy = 'open' | 'required' | 'allowlist';
+type CounterpartyPolicy = 'open' | 'required' | 'allowlist';
 /** One payee pinned to a permission's allowlist. */
-export interface PermissionPayee {
+interface PermissionPayee {
     id: string;
     permission_id: string;
     /** Resolved payee agent, or `null` for a valid-but-unregistered wallet. */
@@ -73,7 +106,7 @@ export interface PermissionPayee {
     registered?: boolean;
     created_at: string;
 }
-export interface Permission {
+interface Permission {
     id: string;
     agent_id: string;
     category: string;
@@ -97,7 +130,7 @@ export interface Permission {
     granted_by: string | null;
     created_at: string;
 }
-export interface Budget {
+interface Budget {
     permission_id: string;
     agent_id: string;
     category: string;
@@ -119,7 +152,7 @@ export interface Budget {
     /** True when the deadline has passed, so every further spend is refused. */
     expired?: boolean;
 }
-export interface Spend {
+interface Spend {
     id: string;
     permission_id: string;
     agent_id: string;
@@ -139,7 +172,7 @@ export interface Spend {
  * handshake). Issuers `accept` or `reject`; the actual attestation still
  * flows through the normal verifiable path.
  */
-export interface IssuerRequest {
+interface IssuerRequest {
     id: string;
     agent_id: string;
     issuer_id: string;
@@ -162,7 +195,7 @@ export interface IssuerRequest {
  * verifying the stored signature. A spend recorded before receipts existed
  * has `signed: false`.
  */
-export interface SpendReceipt {
+interface SpendReceipt {
     spend_id: string;
     /** False when the spend predates receipts (or signing failed) — no signature exists. */
     signed: boolean;
@@ -191,7 +224,7 @@ export interface SpendReceipt {
     ephemeral_key: boolean;
 }
 /** The platform's current receipt-signing public key. */
-export interface PlatformKey {
+interface PlatformKey {
     algorithm: 'ed25519';
     purpose: 'receipt';
     /** SPKI PEM public key — pin this out-of-band to verify receipts independently. */
@@ -200,14 +233,14 @@ export interface PlatformKey {
     ephemeral: boolean;
     receipt_endpoint: string;
 }
-export interface SpendResult {
+interface SpendResult {
     approved: true;
     spend: Spend;
     budget: Budget;
     /** True when this result is a replay of an earlier spend with the same idempotency key (no new charge was applied). */
     idempotent_replay?: boolean;
 }
-export interface SpendBlocked {
+interface SpendBlocked {
     approved: false;
     error: string;
     /**
@@ -235,14 +268,14 @@ export interface SpendBlocked {
     };
 }
 /** Why a previewed spend would be blocked. `null` when it would be allowed. */
-export type SpendPreviewReason = 'ceiling_exceeded' | 'velocity_exceeded' | 'permission_revoked' | 'agent_suspended' | 'agent_not_found' | 'counterparty_declined'
+type SpendPreviewReason = 'ceiling_exceeded' | 'velocity_exceeded' | 'permission_revoked' | 'agent_suspended' | 'agent_not_found' | 'counterparty_declined'
 /** The permission's policy requires a payee, and none was named. */
  | 'counterparty_required'
 /** The named payee is not on this permission's allowlist. */
  | 'counterparty_not_allowed'
 /** The grant's deadline has passed. Extend it with `setExpiry` to resume. */
  | 'permission_expired';
-export interface SpendPreview {
+interface SpendPreview {
     /** Whether a real charge with these inputs would be authorized right now. */
     allowed: boolean;
     /** Machine-readable rejection reason, or `null` when allowed. */
@@ -257,7 +290,7 @@ export interface SpendPreview {
     spend?: Spend;
 }
 /** Optional filters shared by both spend-history queries. */
-export interface SpendQuery {
+interface SpendQuery {
     /** Page size, clamped to 1..200 (default 50). */
     limit?: number;
     /** Rows to skip, for paging through a long history. */
@@ -272,21 +305,21 @@ export interface SpendQuery {
     idempotency_key?: string;
 }
 /** A spend as returned by the agent-wide history, carrying its grant's context. */
-export interface AgentSpend extends Spend {
+interface AgentSpend extends Spend {
     /** Category of the permission the charge was authorized against. */
     category?: string;
     /** Rolling period of that permission. */
     period?: string;
 }
 /** Paging echo returned alongside a spend history page. */
-export interface SpendPaging {
+interface SpendPaging {
     limit: number;
     offset: number;
     /** Rows in this page. Fewer than `limit` means you've reached the end. */
     returned: number;
 }
 /** One page of spend history. */
-export interface SpendPage<T = Spend> {
+interface SpendPage<T = Spend> {
     spends: T[];
     paging: SpendPaging;
 }
@@ -297,7 +330,7 @@ export interface SpendPage<T = Spend> {
  * rolling ceiling window — a month-to-date report and a budget check answer
  * different questions. Use `getBudget` for remaining headroom.
  */
-export interface SpendSummary {
+interface SpendSummary {
     agent_id: string;
     handle?: string;
     /** The window that was reported on (`null` = unbounded). */
@@ -331,7 +364,7 @@ export interface SpendSummary {
         last_spend_at: string | null;
     }>;
 }
-export interface Attestation {
+interface Attestation {
     id: string;
     agent_id: string;
     kind: string;
@@ -341,7 +374,7 @@ export interface Attestation {
     created_at: string;
     verified?: boolean;
 }
-export interface FeedEvent {
+interface FeedEvent {
     event: 'spend.approved' | 'spend.blocked' | 'spend.threshold';
     agent_handle: string;
     amount: number;
@@ -350,14 +383,14 @@ export interface FeedEvent {
     reason: string | null;
     created_at: string;
 }
-export interface Webhook {
+interface Webhook {
     id: string;
     url: string;
     events: string;
     status: string;
     created_at: string;
 }
-export interface Stats {
+interface Stats {
     total_agents: number;
     active_agents: number;
     total_attestations: number;
@@ -369,7 +402,7 @@ export interface Stats {
         c: number;
     }>;
 }
-export interface Meta {
+interface Meta {
     attestation_kinds: string[];
     kind_weights: Record<string, number>;
     tiers: Array<{
@@ -390,7 +423,7 @@ export interface Meta {
  * `registered: false` means the wallet is a valid address but not in the
  * registry — a useful "unknown" answer for a spend gateway.
  */
-export interface WalletProfile {
+interface WalletProfile {
     registered: boolean;
     wallet: string;
     chain: string;
@@ -425,7 +458,7 @@ export interface WalletProfile {
  * nonce, timestamp) lives inside that string, because only signed bytes are
  * cryptographically committed to.
  */
-export interface WalletChallenge {
+interface WalletChallenge {
     agent_id: string;
     handle?: string;
     wallet: string;
@@ -437,8 +470,27 @@ export interface WalletChallenge {
     expires_at: string;
     expires_in_s: number;
 }
+/** Response from `lockAgent` / `unlockAgent`. */
+interface OwnerLockResult {
+    locked: boolean;
+    handle: string;
+    /** When the lock was applied; `null` after an unlock. */
+    owner_locked_at: string | null;
+    /** The wallet the proof recovered to — the address bound to this agent. */
+    wallet: string;
+    note?: string;
+}
+/** Current owner-lock state, from `getOwnerLock`. */
+interface OwnerLockStatus {
+    agent_id: string;
+    handle: string;
+    /** True when mutating this agent's spending authority needs a proof. */
+    locked: boolean;
+    owner_locked_at: string | null;
+    wallet: string;
+}
 /** Result of a wallet proof, or its current state. */
-export interface WalletProof {
+interface WalletProof {
     agent_id: string;
     handle?: string;
     proven: boolean;
@@ -448,10 +500,10 @@ export interface WalletProof {
     /** Signature scheme used. Currently always EIP-191 personal_sign. */
     method?: string;
 }
-export type CounterpartyCheckStatus = 'pass' | 'warn' | 'fail';
-export type CounterpartyVerdict = 'proceed' | 'review' | 'decline';
+type CounterpartyCheckStatus = 'pass' | 'warn' | 'fail';
+type CounterpartyVerdict = 'proceed' | 'review' | 'decline';
 /** One named check that fed into the counterparty verdict. */
-export interface CounterpartyCheck {
+interface CounterpartyCheck {
     id: string;
     label: string;
     status: CounterpartyCheckStatus;
@@ -463,7 +515,7 @@ export interface CounterpartyCheck {
  * An unregistered counterparty resolves to `registered: false` + a `decline`
  * verdict rather than throwing.
  */
-export interface CounterpartyReport {
+interface CounterpartyReport {
     registered: boolean;
     /** proceed = safe · review = caution / human-in-the-loop · decline = do not pay. */
     verdict: CounterpartyVerdict;
@@ -508,7 +560,7 @@ export interface CounterpartyReport {
  * One candidate inside a counterparty comparison — the same assessment
  * `checkCounterparty` returns, flattened and given a `rank`.
  */
-export interface CounterpartyCandidate {
+interface CounterpartyCandidate {
     /** The reference as supplied by the caller (id, handle, or wallet). */
     ref: string;
     /** 1-based position in the ranking; 1 is the best pick. */
@@ -537,7 +589,7 @@ export interface CounterpartyCandidate {
  * `recommended` is the best candidate that actually clears; it is `null` when
  * none reach `proceed`, rather than naming a least-bad option.
  */
-export interface CounterpartyComparison {
+interface CounterpartyComparison {
     /** The amount assessed against every candidate, or null when none was given. */
     requested_amount: number | null;
     /** How many candidates produced a verdict (excludes `unresolved`). */
@@ -549,15 +601,16 @@ export interface CounterpartyComparison {
     /** References that could not be resolved to an agent (e.g. a typo'd handle). */
     unresolved: string[];
 }
-export declare class KairuneError extends Error {
+declare class KairuneError extends Error {
     status: number;
     body: unknown;
     constructor(message: string, status: number, body?: unknown);
 }
-export declare class Kairune {
+declare class Kairune {
     private baseUrl;
     private adminKey;
     private issuerKey;
+    private signOwnerMessage?;
     private _fetch;
     constructor(opts?: KairuneOptions);
     private headers;
@@ -622,6 +675,77 @@ export declare class Kairune {
      * one address and later changed it reads as unproven again.
      */
     getWalletProof(agentId: string): Promise<WalletProof>;
+    /**
+     * Is this agent owner-locked?
+     *
+     * A tiny wrapper around `getAgent` — the lock state lives on the agent row
+     * itself. No extra endpoint is needed and no credentials are required.
+     */
+    getOwnerLock(agentId: string): Promise<OwnerLockStatus>;
+    /**
+     * Bind an agent to its wallet so only the wallet holder can change its
+     * spending authority.
+     *
+     * Requires `signOwnerMessage` on the client — locking is self-authenticating
+     * and proves you hold the address now, not that you held an admin key at
+     * some point. After this, an anonymous caller can still read the agent and
+     * preview a spend, but cannot grant it a budget, charge one, or revoke it.
+     */
+    lockAgent(agentId: string): Promise<OwnerLockResult>;
+    /**
+     * Remove an agent's owner lock, returning it to the open default.
+     *
+     * Takes the same fresh proof as locking — an unauthenticated unlock would
+     * make the lock decorative.
+     */
+    unlockAgent(agentId: string): Promise<OwnerLockResult>;
+    /**
+     * Mint + sign one proof for an agent (`nonce:signature`).
+     *
+     * Useful when you want to hold the proof yourself — e.g. to sign once in a
+     * trusted process and pass the `X-Owner-Proof` string to an untrusted spend
+     * loop. A proof is single-use and is consumed whether the call it authorizes
+     * succeeds or fails.
+     */
+    ownerProof(agentId: string): Promise<{
+        nonce: string;
+        signature: string;
+        header: string;
+        challenge: WalletChallenge;
+    }>;
+    /**
+     * @internal Mint a proof while capturing the exact challenge that was signed.
+     */
+    private proveOwnership;
+    /**
+     * @internal True for the 401 Kairune returns when an agent is owner-locked and
+     * the call carried no fresh proof. The guard runs before any state change, so
+     * catching this and retrying cannot double-apply the mutation.
+     */
+    private static isOwnerLockError;
+    /**
+     * @internal Run a mutation, transparently satisfying an owner lock if the
+     * agent turns out to be locked and a signer is configured.
+     *
+     * Unlocked agents — the default — hit the happy path with zero extra calls:
+     * `run()` succeeds directly and no challenge is ever minted. Only on a 401
+     * owner-lock rejection does the SDK mint a proof and retry once. When no
+     * signer is configured the 401 is re-thrown so the caller learns the real
+     * requirement rather than seeing a silent fall-open.
+     *
+     * @param agentId the (possibly locked) agent whose authority is being changed
+     * @param run issues the request; receives the `X-Owner-Proof` header value
+     *        (empty string on the first, unproofed attempt)
+     */
+    private withOwnerProof;
+    /**
+     * @internal Same as withOwnerProof, for permission-scoped routes. The server
+     * derives the agent from the permission, so the SDK does the same only on the
+     * retry path: a budget read resolves `agent_id`, then one fresh proof replays
+     * the call. The first attempt carried no side effect (the owner guard runs
+     * before any state change), so the replay cannot double-apply it.
+     */
+    private withOwnerProofForPermission;
     /**
      * Pre-flight trust check before paying another agent.
      *
@@ -740,7 +864,6 @@ export declare class Kairune {
         wallet: string;
         operator?: string;
     }): Promise<Agent>;
-    /** Add an attestation (triggers rescore). */
     attest(agentId: string, input: {
         kind: string;
         weight?: number;
@@ -939,4 +1062,5 @@ export declare class Kairune {
         deleted: boolean;
     }>;
 }
-export default Kairune;
+
+export { type Agent, type AgentSpend, type Attestation, type Budget, type CounterpartyCandidate, type CounterpartyCheck, type CounterpartyCheckStatus, type CounterpartyComparison, type CounterpartyPolicy, type CounterpartyReport, type CounterpartyVerdict, type FeedEvent, type IssuerRequest, Kairune, KairuneError, type KairuneOptions, type Meta, type OwnerLockResult, type OwnerLockStatus, type Permission, type PermissionPayee, type PlatformKey, type Spend, type SpendBlocked, type SpendPage, type SpendPaging, type SpendPreview, type SpendPreviewReason, type SpendQuery, type SpendReceipt, type SpendResult, type SpendSummary, type Stats, type WalletChallenge, type WalletProfile, type WalletProof, type Webhook, Kairune as default };
