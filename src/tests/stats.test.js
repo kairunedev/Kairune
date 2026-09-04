@@ -137,6 +137,35 @@ test('CI fixture handles and automation operators are excluded from public stats
   assert.deepStrictEqual(leaked, [], 'leaderboard leaked synthetic agents');
 });
 
+test('a slur handle registered before the profanity gate is hidden from public surfaces', async () => {
+  // The gate in assertValidHandle only stops NEW registrations. One slur was
+  // already active in the registry, so the SQL predicate has to hide it too or
+  // it keeps rendering on the leaderboard and in counterparty checks.
+  const before = (await agentService.getStats()).total_agents;
+  await insertAgent({
+    handle: 'nigger',
+    wallet: '0xslur00000000000000000000000000000000beef',
+    score: 220,
+    tier: 1,
+  });
+
+  const board = await agentService.listAgents({ limit: 500 });
+  assert.ok(
+    !board.some((a) => a.handle === 'nigger'),
+    'slur handle must not appear on the leaderboard'
+  );
+  assert.strictEqual(
+    (await agentService.getStats()).total_agents,
+    before,
+    'slur handle must not be counted in public stats'
+  );
+  assert.strictEqual(
+    await agentService.getRank('nigger'),
+    null,
+    'slur handle must have no public rank'
+  );
+});
+
 test('getOrganicStats publishes the synthetic/organic split and sums correctly', async () => {
   const s = await agentService.getOrganicStats();
 

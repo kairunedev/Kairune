@@ -16,6 +16,7 @@ const {
 const { planNextTier } = require('./tierPlanner');
 const { assessCounterparty } = require('./counterpartyService');
 const webhookService = require('./webhookService');
+const { BANNED_SUBSTRINGS } = require('../middleware/moderation');
 
 // A Robinhood Chain (EVM) address: 0x + 40 hex chars. Used to decide whether a
 // counterparty reference should be resolved by wallet vs id/handle.
@@ -175,6 +176,12 @@ const DEMO_EXCLUSION_SQL = ` AND NOT ${orTree([
   ...prefixTerms('lower(handle)', SYNTHETIC_HANDLE_PREFIXES),
   ...SYNTHETIC_HANDLE_SUFFIXES.map((s) => `lower(handle) LIKE ${sqlStr('%' + s)}`),
   `lower(handle) LIKE '%-test-%'`,
+  // Handles registered before assertValidHandle gained a profanity gate. The
+  // gate stops new ones; this stops the existing ones from being rendered on
+  // the leaderboard, in share cards and in counterparty checks. Only the
+  // unambiguous-slur tier is applied here — the short-word tier needs token
+  // boundaries, which SQL LIKE cannot express without false positives.
+  ...BANNED_SUBSTRINGS.map((bad) => `lower(handle) LIKE ${sqlStr('%' + bad + '%')}`),
   // trim() as well as lower(): rows written before createAgent normalized the
   // operator can still carry stray whitespace ('ci ').
   `lower(trim(COALESCE(operator,''))) IN (${SYNTHETIC_OPERATORS.map(sqlStr).join(', ')})`,
