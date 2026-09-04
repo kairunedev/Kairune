@@ -80,13 +80,13 @@ test('agent.rank_changed fires with direction "up" when an agent overtakes anoth
 
   // Leader gets a healthy score first.
   const leader = await agentService.createAgent({
-    handle: rndHandle('rc-leader'), wallet: rndWallet(), operator: 'CI',
+    handle: rndHandle('rchgleader'), wallet: rndWallet(), operator: 'Fixture Labs',
   });
   await pump(leader.id, 12, 0);
 
   // Challenger starts lower (fewer vouches) → ranks below the leader.
   const challenger = await agentService.createAgent({
-    handle: rndHandle('rc-challenger'), wallet: rndWallet(), operator: 'CI',
+    handle: rndHandle('rchgchallenger'), wallet: rndWallet(), operator: 'Fixture Labs',
   });
   await pump(challenger.id, 4, 100);
 
@@ -143,11 +143,11 @@ test('agent.rank_changed fires with direction "down" when an agent\'s own score 
   // Equal scores → A wins the tie-break (created first) and sits at rank #1,
   // B right behind it. A single chargeback then drops A below B.
   const a = await agentService.createAgent({
-    handle: rndHandle('rc-a'), wallet: rndWallet(), operator: 'CI',
+    handle: rndHandle('rchga'), wallet: rndWallet(), operator: 'Fixture Labs',
   });
   await pump(a.id, 8, 0);
   const b = await agentService.createAgent({
-    handle: rndHandle('rc-b'), wallet: rndWallet(), operator: 'CI',
+    handle: rndHandle('rchgb'), wallet: rndWallet(), operator: 'Fixture Labs',
   });
   await pump(b.id, 8, 100);
 
@@ -210,7 +210,7 @@ test('no rank_changed event when the rank does not move', async () => {
   // A lone (or clearly-separated) agent whose small score bump doesn't change
   // its position should not emit a rank_changed event.
   const solo = await agentService.createAgent({
-    handle: rndHandle('rc-solo'), wallet: rndWallet(), operator: 'CI',
+    handle: rndHandle('rchgsolo'), wallet: rndWallet(), operator: 'Fixture Labs',
   });
   await pump(solo.id, 6, 0);
   received.length = 0;

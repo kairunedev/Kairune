@@ -488,7 +488,9 @@ test('suspended agent cannot get permission → 409', async () => {
 // Bring an agent up to a tier that can receive spending permission.
 async function trustedAgent(handle, wallet) {
   const ctx = await setupIssuer(handle + '-issuer');
-  const create = await req('POST', '/api/agents', { handle, wallet, operator: 'CI' });
+  // Not 'CI': that operator marks an agent as a synthetic fixture and hides it
+  // from /api/stats and the leaderboard, which several assertions below read.
+  const create = await req('POST', '/api/agents', { handle, wallet, operator: 'Fixture Labs' });
   const id = create.body.agent.id;
   for (let i = 0; i < 15; i++) await signedAttest(id, 'task_completed', ctx);
   await signedAttest(id, 'peer_vouch', ctx);
@@ -682,7 +684,9 @@ test('spend: non-positive amount → 400, unknown permission → 404', async () 
 });
 
 test('stats: total_spend reflects authorized spends', async () => {
-  const id = await trustedAgent('spend-04', '0x5000000000000000000000000000000000000004');
+  // Handle must not match a synthetic-fixture prefix, or the agent (and its
+  // spend) is excluded from /api/stats and the delta below reads as zero.
+  const id = await trustedAgent('spender04', '0x5000000000000000000000000000000000000004');
   const grant = await req('POST', '/api/agents/' + id + '/permissions', {
     category: 'compute',
     ceiling: 50,

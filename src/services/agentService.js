@@ -39,11 +39,15 @@ function uuid() {
 async function createAgent({ handle, wallet, operator = null }) {
   const db = await getDb();
   const ts = nowIso();
+  // Trim the operator so 'CI', 'ci' and 'ci ' do not become three distinct
+  // buckets when grouping. Case is preserved (it is a display name), so all
+  // comparisons against it must lower-case both sides. Empty becomes null.
+  const op = operator == null ? null : String(operator).trim() || null;
   const agent = {
     id: uuid(),
     handle: String(handle).trim().toLowerCase(),
     wallet: String(wallet).trim(),
-    operator,
+    operator: op,
     status: 'active',
     score: 0,
     tier: 0,
@@ -91,20 +95,51 @@ async function getAgentByWallet(wallet) {
   return res.rows[0] || null;
 }
 
+// Handle prefixes minted by our own test suites, probe scripts and docs
+// examples. These are fixtures, not registrations — an agent named `vf-payer-*`
+// exists because a verification script ran, and it reaching score 1000 says
+// nothing about the registry. Kept as data, hidden from public surfaces.
+const SYNTHETIC_HANDLE_PREFIXES = [
+  'demo-', 'try-', 'sdk-test-', 'dd-test',
+  'sc-', 'ex-', 'extbot-', 'vf-', 'pb-', 'cmp-', 'rc-', 'nb-', 'tp-', 'ns-',
+  'rank-', 'payee-', 'spend-', 'div-', 'dbg-', 'wal-', 'dup-', 'kind-',
+  'susp-', 'real-', 'doc-payer-', 'gpu-vendor-', 'quicktest',
+];
+
+// Fixture naming convention in src/tests/**: `<scenario>-agent`
+// (auth-agent, badsig-agent, replay-agent, stale-agent, unsigned-agent, ...).
+const SYNTHETIC_HANDLE_SUFFIXES = ['-agent'];
+
+// `operator` values that identify an automated caller rather than a team.
+// Compared against the trimmed, lower-cased column.
+const SYNTHETIC_OPERATORS = [
+  'demo-loop', 'demo user', 'dd check',
+  'ci', 'probe', 'smoke', 'live-check', 'verify-script', 'debug-check',
+  'yapping-test', 'external-tester', 'home', 'a',
+];
+
+const sqlStr = (s) => `'${String(s).replace(/'/g, "''")}'`;
+
 // Shared SQL predicate that excludes demo / test / junk agents from public
 // surfaces (leaderboard AND stats — they must agree). Data stays in the DB
 // (nothing is deleted); it just never surfaces publicly. `wallet NOT LIKE 0x%`
 // intentionally excludes non-EVM identities too, matching current behavior.
 // Prefixed with " AND " so it can be appended to a WHERE clause.
+//
+// Built from the arrays above rather than hand-written so that adding a new
+// test-handle convention is a one-line change and cannot drift between the
+// leaderboard, the rank endpoints and stats.
 const DEMO_EXCLUSION_SQL = ` AND NOT (
-         lower(handle) LIKE 'demo-%'
-         OR lower(handle) LIKE 'try-%'
-         OR lower(handle) LIKE 'sdk-test-%'
-         OR lower(handle) LIKE '%-test-%'
-         OR lower(handle) LIKE 'dd-test%'
-         OR lower(COALESCE(operator,'')) IN ('demo-loop','demo user','dd check')
-         OR lower(COALESCE(wallet,'')) LIKE '0x00000000%'
-         OR lower(COALESCE(wallet,'')) NOT LIKE '0x%'
+         ${[
+           ...SYNTHETIC_HANDLE_PREFIXES.map((p) => `lower(handle) LIKE ${sqlStr(p + '%')}`),
+           ...SYNTHETIC_HANDLE_SUFFIXES.map((s) => `lower(handle) LIKE ${sqlStr('%' + s)}`),
+           `lower(handle) LIKE '%-test-%'`,
+           // trim() as well as lower(): rows written before createAgent
+           // normalized the operator can carry stray whitespace ('ci ').
+           `lower(trim(COALESCE(operator,''))) IN (${SYNTHETIC_OPERATORS.map(sqlStr).join(', ')})`,
+           `lower(COALESCE(wallet,'')) LIKE '0x00000000%'`,
+           `lower(COALESCE(wallet,'')) NOT LIKE '0x%'`,
+         ].join('\n         OR ')}
        )`;
 
 /**
@@ -621,6 +656,53 @@ async function getStats({ includeDemo = false } = {}) {
 }
 
 /**
+ * The honest split between synthetic and organic registrations.
+ *
+ * `getStats()` already hides synthetic agents, but it does not say how many it
+ * hid — which makes the headline number impossible to sanity-check from the
+ * outside. This endpoint publishes both sides plus the ratio, so anyone can see
+ * that most rows in the registry are our own CI fixtures rather than adopters.
+ *
+ * "organic" here means "not matched by our synthetic-fixture predicate". It is
+ * an upper bound on real adoption, not a proof of it — seed and pilot rows
+ * still count as organic.
+ *
+ * @returns {Promise<{organic:object, synthetic:{agents:number}, total:{agents:number},
+ *   organic_ratio:number, operators:Array<{operator:string|null,c:number}>,
+ *   note:string}>}
+ */
+async function getOrganicStats() {
+  const db = await getDb();
+  const one = async (sql) => (await db.execute(sql)).rows[0];
+
+  const [organic, totalAll, operatorsRaw] = await Promise.all([
+    getStats({ includeDemo: false }),
+    one('SELECT COUNT(*) c FROM agents'),
+    // Group on the trimmed/lower-cased operator so 'CI' and 'ci ' collapse.
+    db.execute(`SELECT lower(trim(COALESCE(operator,''))) op, COUNT(*) c
+                FROM agents GROUP BY op ORDER BY c DESC`),
+  ]);
+
+  const total = Number((totalAll && totalAll.c) || 0);
+  const organicAgents = Number(organic.total_agents) || 0;
+
+  return {
+    organic,
+    synthetic: { agents: total - organicAgents },
+    total: { agents: total },
+    organic_ratio: total > 0 ? Math.round((organicAgents / total) * 1000) / 1000 : 0,
+    operators: operatorsRaw.rows.map((r) => ({
+      operator: r.op === '' ? null : r.op,
+      c: Number(r.c) || 0,
+    })),
+    note:
+      'Synthetic rows are CI fixtures, probe scripts and docs examples. '
+      + 'Organic is an upper bound on adoption, not a proof of it — seed and '
+      + 'pilot rows are counted as organic.',
+  };
+}
+
+/**
  * Change an agent's status (active/suspended).
  * @param {string} id
  * @param {string} status
@@ -825,6 +907,7 @@ module.exports = {
   compareCounterparties,
   MAX_COMPARE_CANDIDATES,
   getStats,
+  getOrganicStats,
   setAgentStatus,
   setOwnerLock,
   recalcAgent,

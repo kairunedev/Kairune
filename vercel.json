@@ -4,9 +4,17 @@
   "functions": {
     "api/index.js": {
       "maxDuration": 15,
-      "includeFiles": "{docs/**,a/**,app/**,assets/**,leaderboard/**,index.html,src/db/**,src/middleware/**,src/routes/**,src/services/**}"
+      "includeFiles": "{docs/**,a/**,app/**,assets/**,leaderboard/**,index.html,src/**}"
     }
   },
+  "redirects": [
+    {
+      "source": "/(.*)",
+      "has": [{ "type": "host", "value": "www.kairune.online" }],
+      "destination": "https://kairune.online/$1",
+      "permanent": true
+    }
+  ],
   "rewrites": [
     { "source": "/health", "destination": "/api/index.js" },
     { "source": "/api", "destination": "/api/index.js" },

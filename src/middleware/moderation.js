@@ -11,8 +11,63 @@ const RESERVED = new Set([
   'undefined', 'system', 'root', 'test', 'testing', 'demo',
 ]);
 
+// A handle is public: it renders on the leaderboard, in share cards, and in any
+// counterparty check another agent runs. A slur got registered and sat on the
+// public registry, so this is enforced at registration rather than moderated
+// away afterwards. Two tiers, because matching strategy has to differ:
+
+// Tier 1 — long, unambiguous slurs. Matched as a SUBSTRING of the folded
+// handle, so `xnigger1` is refused too. Safe to match loosely because these
+// strings essentially never occur inside an innocent word.
+const BANNED_SUBSTRINGS = [
+  'nigger', 'nigga', 'faggot', 'chink', 'kike', 'tranny', 'rapist',
+  'hitler', 'whore', 'fuck', 'shit', 'bitch', 'asshole', 'bastard',
+  'pussy', 'slut', 'retard',
+];
+
+// Tier 2 — short words that appear inside perfectly ordinary names. Matched
+// only as a WHOLE TOKEN, so `cockpit-ai`, `dickinson` and `scunthorpe` are
+// accepted while a bare `cock` or `dick-bot` is not. (The Scunthorpe problem:
+// a naive substring list refuses real names.)
+const BANNED_WORDS = ['cunt', 'spic', 'pedo', 'dick', 'cock', 'nazi', 'ass'];
+
+// Leet-speak folding so `n1gg3r` and `f4gg0t` do not slip past the list.
+const LEET_MAP = { 0: 'o', 1: 'i', 3: 'e', 4: 'a', 5: 's', 7: 't', $: 's', '@': 'a' };
+
 function normalizeHandle(h) {
   return String(h || '').trim().toLowerCase();
+}
+
+/** Undo common leet substitutions: `n1gg3r` -> `nigger`. */
+function unleet(s) {
+  return s.replace(/[013457$@]/g, (ch) => LEET_MAP[ch] || ch);
+}
+
+/**
+ * Fold a handle for substring comparison: strip separators and undo leet, so
+ * `n_1-gg3r` collapses to `nigger`.
+ * @param {string} h
+ * @returns {string}
+ */
+function foldForProfanity(h) {
+  return unleet(normalizeHandle(h).replace(/[-_.\s]/g, ''));
+}
+
+/**
+ * True when a handle contains a banned slur, or consists of / contains a
+ * banned word as a separator-delimited token.
+ * @param {string} handle
+ * @returns {boolean}
+ */
+function containsProfanity(handle) {
+  const folded = foldForProfanity(handle);
+  if (BANNED_SUBSTRINGS.some((bad) => folded.includes(bad))) return true;
+
+  // Token pass: split on separators and digit runs, so `dick-bot`, `dick_01`
+  // and `dick99` all yield the token `dick`, while `dickinson` yields only
+  // `dickinson` and passes.
+  const tokens = unleet(normalizeHandle(handle)).split(/[-_.\s]+|\d+/).filter(Boolean);
+  return tokens.some((t) => BANNED_WORDS.includes(t));
 }
 
 /**
@@ -44,6 +99,13 @@ function assertValidHandle(handle, opts = {}) {
   }
   if (RESERVED.has(h) || h.startsWith('demo-')) {
     const err = new Error('Handle is reserved — pick another name');
+    err.status = 400;
+    throw err;
+  }
+  // A handle is a public identifier. Refuse slurs at the door rather than
+  // moderating them off the leaderboard afterwards.
+  if (containsProfanity(h)) {
+    const err = new Error('Handle contains prohibited language — pick another name');
     err.status = 400;
     throw err;
   }
@@ -189,6 +251,9 @@ function assertValidNote(raw) {
 
 module.exports = {
   RESERVED,
+  BANNED_SUBSTRINGS,
+  BANNED_WORDS,
+  containsProfanity,
   normalizeHandle,
   assertValidHandle,
   assertValidRobinhoodWallet,

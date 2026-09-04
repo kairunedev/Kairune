@@ -43,6 +43,7 @@
  *   GET    /api/webhooks/:id/deliveries         webhook delivery log
  *   DELETE /api/webhooks/:id                     delete a webhook
  *   GET    /api/stats                          global statistics
+ *   GET    /api/stats/organic                  synthetic vs organic breakdown
  *   GET    /api/feed                           public spend activity feed
  *   GET    /api/meta                           metadata (kinds, tiers)
  *   POST   /api/verify                          public, stateless Ed25519 signature check
@@ -301,6 +302,16 @@ router.get(
     const includeDemo =
       req.query.include_demo === '1' || req.query.include_demo === 'true';
     res.json(await agentService.getStats({ includeDemo }));
+  })
+);
+
+// The synthetic-vs-organic breakdown behind /stats. /stats hides our own CI
+// fixtures but does not say how many it hid, which makes the headline number
+// impossible to audit from outside. This publishes both sides and the ratio.
+router.get(
+  '/stats/organic',
+  wrap(async (req, res) => {
+    res.json(await agentService.getOrganicStats());
   })
 );
 

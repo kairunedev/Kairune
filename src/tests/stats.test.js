@@ -31,10 +31,11 @@ async function insertAgent({ handle, wallet, operator = null, score = 500, tier 
 }
 
 test('getStats excludes demo/test/junk agents by default and matches the leaderboard', async () => {
-  // 3 real agents.
-  await insertAgent({ handle: 'real-alpha', wallet: '0xaaaa000000', score: 900, tier: 4 });
-  await insertAgent({ handle: 'real-bravo', wallet: '0xbbbb000000', score: 500, tier: 2 });
-  await insertAgent({ handle: 'real-charlie', wallet: '0xcccc000000', score: 100, tier: 0 });
+  // 3 real agents. Handles deliberately avoid every synthetic-fixture prefix
+  // (including 'real-', which is itself one of our test conventions).
+  await insertAgent({ handle: 'northwind', wallet: '0xaaaa000000', score: 900, tier: 4 });
+  await insertAgent({ handle: 'meshworks', wallet: '0xbbbb000000', score: 500, tier: 2 });
+  await insertAgent({ handle: 'driftless', wallet: '0xcccc000000', score: 100, tier: 0 });
 
   // Junk that must be excluded: sdk-test handle, try- handle, demo-loop op,
   // 0x0000 wallet, and a non-0x (non-EVM) wallet.
@@ -66,4 +67,91 @@ test('getStats with includeDemo=true counts everything', async () => {
   const all = await agentService.getStats({ includeDemo: true });
   const real = await agentService.getStats();
   assert.ok(all.total_agents > real.total_agents, 'includeDemo counts more');
+});
+
+test('CI fixture handles and automation operators are excluded from public stats', async () => {
+  const before = (await agentService.getStats()).total_agents;
+
+  // Handles minted by our own suites and probe scripts. Every one of these
+  // shapes was found sitting on the public leaderboard at score 1000.
+  const fixtureHandles = [
+    'extbot-31626', 'doc-payer-10233', 'gpu-vendor-10233', 'dbg-3233',
+    'vf-payer-txo6cx', 'pb-payer-xll6qh', 'sc-alpha', 'ex-bravo',
+    'cmp-a', 'rc-a', 'nb-a', 'tp-a', 'ns-a', 'rank-a', 'payee-a',
+    'spend-a', 'div-diverse', 'wal-a', 'dup-01', 'kind-01', 'susp-01',
+    'quicktest-01', 'auth-agent', 'badsig-agent', 'replay-agent',
+  ];
+  for (const [i, handle] of fixtureHandles.entries()) {
+    await insertAgent({
+      handle,
+      wallet: `0xfix${String(i).padStart(7, '0')}`,
+      score: 1000,
+      tier: 4,
+    });
+  }
+
+  // Automation operators, regardless of how innocuous the handle looks.
+  const autoOps = [
+    'CI', 'ci ', 'probe', 'smoke', 'live-check', 'verify-script',
+    'debug-check', 'yapping-test', 'external-tester',
+  ];
+  for (const [i, operator] of autoOps.entries()) {
+    await insertAgent({
+      handle: `plausible${i}`,
+      wallet: `0xop${String(i).padStart(8, '0')}`,
+      operator,
+      score: 1000,
+      tier: 4,
+    });
+  }
+
+  const after = await agentService.getStats();
+  assert.strictEqual(
+    after.total_agents,
+    before,
+    'no CI fixture or automation-operated agent may reach public stats'
+  );
+
+  // And none of them may appear on the leaderboard either — the two surfaces
+  // must never disagree.
+  const board = await agentService.listAgents({ limit: 500 });
+  const leaked = board
+    .map((a) => a.handle)
+    .filter((h) => fixtureHandles.includes(h) || h.startsWith('plausible'));
+  assert.deepStrictEqual(leaked, [], 'leaderboard leaked synthetic agents');
+});
+
+test('getOrganicStats publishes the synthetic/organic split and sums correctly', async () => {
+  const s = await agentService.getOrganicStats();
+
+  assert.strictEqual(
+    s.organic.total_agents + s.synthetic.agents,
+    s.total.agents,
+    'organic + synthetic must equal the full row count'
+  );
+  assert.ok(s.synthetic.agents > 0, 'fixtures inserted above must be counted as synthetic');
+  assert.ok(s.organic_ratio >= 0 && s.organic_ratio <= 1, 'ratio is a fraction');
+  assert.ok(Array.isArray(s.operators), 'operators breakdown is present');
+
+  // 'CI' and 'ci ' were inserted as distinct raw strings; the breakdown groups
+  // on the trimmed/lower-cased value, so they must collapse into one bucket.
+  const ciBuckets = s.operators.filter((o) => o.operator === 'ci');
+  assert.strictEqual(ciBuckets.length, 1, 'CI variants must collapse to one bucket');
+  assert.strictEqual(ciBuckets[0].c, 2, 'both CI variants land in that bucket');
+});
+
+test('createAgent trims the operator so casing/whitespace variants group together', async () => {
+  const a = await agentService.createAgent({
+    handle: 'optrim-one',
+    wallet: '0x1111111111111111111111111111111111111111',
+    operator: '  Skybridge  ',
+  });
+  assert.strictEqual(a.operator, 'Skybridge', 'operator is trimmed, case preserved');
+
+  const b = await agentService.createAgent({
+    handle: 'optrim-two',
+    wallet: '0x2222222222222222222222222222222222222222',
+    operator: '   ',
+  });
+  assert.strictEqual(b.operator, null, 'whitespace-only operator becomes null');
 });

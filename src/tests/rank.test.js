@@ -45,7 +45,7 @@ function get(path) {
 
 // Insert an agent straight into the DB with an explicit score/tier so rank
 // ordering is fully under our control (no attestation math involved).
-async function insertAgent({ handle, wallet, score, tier = 0, created_at, operator = 'CI' }) {
+async function insertAgent({ handle, wallet, score, tier = 0, created_at, operator = 'Fixture Labs' }) {
   const db = await getDb();
   const id = crypto.randomUUID();
   await db.execute({
@@ -64,28 +64,28 @@ before(async () => {
   //   #4 delta   score 100
   // Plus a demo agent that must NOT be counted or ranked.
   await insertAgent({
-    handle: 'rank-alpha',
+    handle: 'boardalpha',
     wallet: '0xa000000000000000000000000000000000000001',
     score: 900,
     tier: 4,
     created_at: '2026-01-01T00:00:00.000Z',
   });
   await insertAgent({
-    handle: 'rank-bravo',
+    handle: 'boardbravo',
     wallet: '0xb000000000000000000000000000000000000002',
     score: 500,
     tier: 3,
     created_at: '2026-01-02T00:00:00.000Z',
   });
   await insertAgent({
-    handle: 'rank-charlie',
+    handle: 'boardcharlie',
     wallet: '0xc000000000000000000000000000000000000003',
     score: 500,
     tier: 3,
     created_at: '2026-01-03T00:00:00.000Z',
   });
   await insertAgent({
-    handle: 'rank-delta',
+    handle: 'boarddelta',
     wallet: '0xd000000000000000000000000000000000000004',
     score: 100,
     tier: 1,
@@ -115,7 +115,7 @@ after(async () => {
 // ---- service logic -------------------------------------------------------
 
 test('getRank places the top-scoring agent at #1', async () => {
-  const r = await agentService.getRank('rank-alpha');
+  const r = await agentService.getRank('boardalpha');
   assert.equal(r.rank, 1);
   assert.equal(r.total, 4); // demo agent excluded
   assert.equal(r.percentile, 25); // 1/4 -> top 25%
@@ -124,15 +124,15 @@ test('getRank places the top-scoring agent at #1', async () => {
 });
 
 test('getRank breaks score ties by earlier created_at', async () => {
-  const bravo = await agentService.getRank('rank-bravo');
-  const charlie = await agentService.getRank('rank-charlie');
+  const bravo = await agentService.getRank('boardbravo');
+  const charlie = await agentService.getRank('boardcharlie');
   // Same score (500) but bravo is older -> bravo ranks above charlie.
   assert.equal(bravo.rank, 2);
   assert.equal(charlie.rank, 3);
 });
 
 test('getRank ranks the lowest agent last', async () => {
-  const r = await agentService.getRank('rank-delta');
+  const r = await agentService.getRank('boarddelta');
   assert.equal(r.rank, 4);
   assert.equal(r.total, 4);
   assert.equal(r.percentile, 100); // 4/4 -> top 100%
@@ -152,13 +152,13 @@ test('getRank returns null for an unknown agent', async () => {
 // ---- HTTP route ----------------------------------------------------------
 
 test('GET /api/agents/:id/rank returns a live position', async () => {
-  const res = await get('/api/agents/rank-bravo/rank');
+  const res = await get('/api/agents/boardbravo/rank');
   assert.equal(res.status, 200);
   const body = res.json();
   assert.equal(body.ranked, true);
   assert.equal(body.rank, 2);
   assert.equal(body.total, 4);
-  assert.equal(body.handle, 'rank-bravo');
+  assert.equal(body.handle, 'boardbravo');
 });
 
 test('GET /api/agents/:id/rank reports demo agents as unranked', async () => {
@@ -192,7 +192,7 @@ test('renderRankBadgeSvg shows "unranked" when there is no position', () => {
 });
 
 test('GET /a/:handle/rank.svg returns an SVG badge with the live rank', async () => {
-  const res = await get('/a/rank-alpha/rank.svg');
+  const res = await get('/a/boardalpha/rank.svg');
   assert.equal(res.status, 200);
   assert.match(res.headers['content-type'], /image\/svg\+xml/);
   assert.match(res.body, /#1 of 4/);
