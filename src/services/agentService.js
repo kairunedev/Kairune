@@ -120,6 +120,48 @@ const SYNTHETIC_OPERATORS = [
 
 const sqlStr = (s) => `'${String(s).replace(/'/g, "''")}'`;
 
+/**
+ * Combine boolean terms into a BALANCED tree of ORs.
+ *
+ * A plain `a OR b OR c OR ...` parses left-nested, so N terms cost N levels of
+ * expression depth. Turso rejects anything past depth 100 with
+ * SQLITE_UNKNOWN "Expression tree is too large", and this predicate is
+ * additionally nested inside up to three levels of subquery in getStats — so a
+ * flat join silently works on local libsql and 500s in production. Splitting
+ * down the middle makes depth logarithmic in the number of terms.
+ *
+ * @param {string[]} terms
+ * @returns {string} a parenthesised SQL boolean expression
+ */
+function orTree(terms) {
+  if (terms.length === 0) return '0';
+  if (terms.length === 1) return terms[0];
+  const mid = Math.ceil(terms.length / 2);
+  return `(${orTree(terms.slice(0, mid))} OR ${orTree(terms.slice(mid))})`;
+}
+
+/**
+ * Group prefixes by length into `substr(...) IN (...)` terms.
+ *
+ * One term per distinct prefix LENGTH instead of one LIKE per prefix, which
+ * keeps the term count (and so the expression depth) flat as the list grows,
+ * and is an exact comparison rather than a pattern match.
+ *
+ * @param {string} expr  the already-lowered column expression
+ * @param {string[]} prefixes
+ * @returns {string[]}
+ */
+function prefixTerms(expr, prefixes) {
+  const byLength = new Map();
+  for (const p of prefixes) {
+    if (!byLength.has(p.length)) byLength.set(p.length, []);
+    byLength.get(p.length).push(p);
+  }
+  return [...byLength.entries()]
+    .sort((a, b) => a[0] - b[0])
+    .map(([len, ps]) => `substr(${expr}, 1, ${len}) IN (${ps.map(sqlStr).join(', ')})`);
+}
+
 // Shared SQL predicate that excludes demo / test / junk agents from public
 // surfaces (leaderboard AND stats — they must agree). Data stays in the DB
 // (nothing is deleted); it just never surfaces publicly. `wallet NOT LIKE 0x%`
@@ -129,18 +171,16 @@ const sqlStr = (s) => `'${String(s).replace(/'/g, "''")}'`;
 // Built from the arrays above rather than hand-written so that adding a new
 // test-handle convention is a one-line change and cannot drift between the
 // leaderboard, the rank endpoints and stats.
-const DEMO_EXCLUSION_SQL = ` AND NOT (
-         ${[
-           ...SYNTHETIC_HANDLE_PREFIXES.map((p) => `lower(handle) LIKE ${sqlStr(p + '%')}`),
-           ...SYNTHETIC_HANDLE_SUFFIXES.map((s) => `lower(handle) LIKE ${sqlStr('%' + s)}`),
-           `lower(handle) LIKE '%-test-%'`,
-           // trim() as well as lower(): rows written before createAgent
-           // normalized the operator can carry stray whitespace ('ci ').
-           `lower(trim(COALESCE(operator,''))) IN (${SYNTHETIC_OPERATORS.map(sqlStr).join(', ')})`,
-           `lower(COALESCE(wallet,'')) LIKE '0x00000000%'`,
-           `lower(COALESCE(wallet,'')) NOT LIKE '0x%'`,
-         ].join('\n         OR ')}
-       )`;
+const DEMO_EXCLUSION_SQL = ` AND NOT ${orTree([
+  ...prefixTerms('lower(handle)', SYNTHETIC_HANDLE_PREFIXES),
+  ...SYNTHETIC_HANDLE_SUFFIXES.map((s) => `lower(handle) LIKE ${sqlStr('%' + s)}`),
+  `lower(handle) LIKE '%-test-%'`,
+  // trim() as well as lower(): rows written before createAgent normalized the
+  // operator can still carry stray whitespace ('ci ').
+  `lower(trim(COALESCE(operator,''))) IN (${SYNTHETIC_OPERATORS.map(sqlStr).join(', ')})`,
+  `lower(COALESCE(wallet,'')) LIKE '0x00000000%'`,
+  `lower(COALESCE(wallet,'')) NOT LIKE '0x%'`,
+])}`;
 
 /**
  * List agents (leaderboard), ordered by highest score.

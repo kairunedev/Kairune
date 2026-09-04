@@ -63,6 +63,22 @@ test('getStats excludes demo/test/junk agents by default and matches the leaderb
   assert.deepStrictEqual(distTiers, [0, 2, 4]);
 });
 
+test('DEMO_EXCLUSION_SQL stays well under Turso expression-depth limit', async () => {
+  // Turso rejects expressions deeper than 100 with SQLITE_UNKNOWN
+  // "Expression tree is too large". Local libsql does not enforce this, so a
+  // flat `a OR b OR c OR ...` chain passes every test and then 500s in
+  // production. getStats nests this predicate inside up to three levels of
+  // subquery, so the predicate itself must stay shallow.
+  let depth = 0;
+  let max = 0;
+  for (const ch of agentService.DEMO_EXCLUSION_SQL) {
+    if (ch === '(') max = Math.max(max, ++depth);
+    else if (ch === ')') depth -= 1;
+  }
+  assert.strictEqual(depth, 0, 'parentheses must balance');
+  assert.ok(max <= 20, `predicate nesting depth ${max} leaves no room for subqueries`);
+});
+
 test('getStats with includeDemo=true counts everything', async () => {
   const all = await agentService.getStats({ includeDemo: true });
   const real = await agentService.getStats();
