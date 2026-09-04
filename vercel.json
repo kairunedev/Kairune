@@ -4,7 +4,7 @@
   "functions": {
     "api/index.js": {
       "maxDuration": 15,
-      "includeFiles": "{docs/**,a/**,app/**,assets/**,leaderboard/**,index.html,src/**}"
+      "includeFiles": "{docs/**,a/**,app/**,assets/**,leaderboard/**,index.html,src/db/**,src/middleware/**,src/routes/**,src/services/**}"
     }
   },
   "redirects": [
