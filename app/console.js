@@ -129,6 +129,22 @@ function renderTrustSources(ts) {
   h += '<div class="ts-cell"><span>distinct issuers</span><b>' + ts.distinct_issuers + '</b></div>';
   h += '<div class="ts-cell"><span>confidence</span><b class="conf">' + ts.confidence + '%</b></div>';
   h += '</div>';
+  // Score ceiling. Diversity was measurable here but not actionable: an agent
+  // held down by a lack of corroboration could read distinct_issuers: 0 without
+  // learning that this is why its score stopped climbing.
+  if (typeof ts.score_ceiling === 'number') {
+    const capped = ts.distinct_issuers === 0;
+    h += '<div class="ts-ceiling' + (capped ? ' capped' : '') + '">';
+    h += '<span class="ts-ceil-label">score ceiling</span>';
+    h += '<b>' + ts.score_ceiling + '</b>';
+    if (typeof ts.score_ceiling_next_issuer === 'number' && ts.score_ceiling_next_issuer > ts.score_ceiling) {
+      h += '<span class="ts-ceil-next">+1 issuer &rarr; ' + ts.score_ceiling_next_issuer + '</span>';
+    }
+    h += '</div>';
+    if (ts.ceiling_note) {
+      h += '<div class="ts-ceil-note">' + esc(ts.ceiling_note) + '</div>';
+    }
+  }
   if (ts.per_issuer && ts.per_issuer.length > 0) {
     h += '<div class="ts-breakdown">';
     ts.per_issuer.forEach((iss) => {

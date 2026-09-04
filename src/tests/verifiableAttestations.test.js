@@ -493,6 +493,70 @@ test('trust-sources: multiple independent issuers raise confidence and diversity
   assert.ok(d.body.top_issuer_share <= 0.5, 'no single issuer should dominate the diverse agent');
 });
 
+// --- the corroboration ceiling is actionable, not just measurable -----------
+//
+// Diversity was already reported here, but an agent capped by corroboration had
+// no way to learn that this was why its score stopped climbing. These pin the
+// ceiling fields that make it diagnosable end-to-end over HTTP.
+
+test('trust-sources: an uncorroborated agent is told its ceiling and how to lift it', async () => {
+  const agentId = await newAgent('div-ceiling-none');
+  for (let i = 0; i < 60; i++) {
+    await req('POST', `/api/agents/${agentId}/attestations`, { kind: 'peer_vouch' });
+  }
+
+  const meta = await req('GET', '/api/meta');
+  const floor = meta.body.uncorroborated_ceiling;
+  const lift = meta.body.ceiling_lift_per_issuer;
+  assert.strictEqual(typeof floor, 'number', 'meta must publish the ceiling');
+  assert.strictEqual(typeof lift, 'number', 'meta must publish the per-issuer lift');
+
+  const r = await req('GET', `/api/agents/${agentId}/trust-sources`);
+  assert.strictEqual(r.status, 200);
+  assert.strictEqual(r.body.distinct_issuers, 0);
+  assert.strictEqual(r.body.score_ceiling, floor);
+  assert.strictEqual(r.body.score_ceiling_next_issuer, floor + lift);
+  assert.ok(r.body.issuers_to_remove_ceiling > 0);
+  assert.match(r.body.ceiling_note, /capped/i);
+
+  // And the agent itself must actually be held at or below that ceiling.
+  const detail = await req('GET', `/api/agents/${agentId}`);
+  assert.ok(
+    detail.body.agent.score <= floor,
+    `score must respect the ceiling, got ${detail.body.agent.score}`
+  );
+  assert.ok(detail.body.agent.tier <= 2, 'self-reported history cannot reach TRUSTED');
+});
+
+test('trust-sources: a verified issuer raises the reported ceiling', async () => {
+  const agentId = await newAgent('div-ceiling-one');
+  await verifiedFromIssuer(agentId, 'ceil-iss-one', 'clean_payment');
+
+  const meta = await req('GET', '/api/meta');
+  const r = await req('GET', `/api/agents/${agentId}/trust-sources`);
+  assert.strictEqual(r.body.distinct_issuers, 1);
+  assert.strictEqual(
+    r.body.score_ceiling,
+    meta.body.uncorroborated_ceiling + meta.body.ceiling_lift_per_issuer
+  );
+  assert.match(r.body.ceiling_note, /raise/i);
+});
+
+test('the score breakdown names the corroboration ceiling as the binding rule', async () => {
+  const agentId = await newAgent('div-ceiling-bound');
+  for (let i = 0; i < 220; i++) {
+    await req('POST', `/api/agents/${agentId}/attestations`, { kind: 'peer_vouch' });
+  }
+  const detail = await req('GET', `/api/agents/${agentId}`);
+  const b = detail.body.agent.breakdown;
+  assert.strictEqual(b.boundBy, 'corroboration-ceiling');
+  assert.strictEqual(b.corroborationCapped, true);
+  assert.ok(
+    b.earnedScore > detail.body.agent.score,
+    'the breakdown must publish what the raw history would have scored'
+  );
+});
+
 // --- weight is server-derived, never caller-supplied ------------------------
 //
 // The unsigned submission path needs no credentials, and `weight` was never in

@@ -193,7 +193,17 @@ nav .conn.err i { background:var(--red); box-shadow:0 0 10px rgba(233,115,102,.6
 .ts-issuer { display:flex; justify-content:space-between; align-items:center; font-family:var(--mono); font-size:12px; }
 .ts-name { color:var(--text-2); }
 .ts-count { color:var(--text-3); }
-@media (max-width:560px){ .ts-grid { grid-template-columns:repeat(2,1fr); } }
+
+/* corroboration ceiling — why a score stopped climbing */
+.ts-ceiling { margin-top:16px; padding-top:14px; border-top:1px solid var(--line);
+  display:flex; align-items:baseline; gap:10px; font-family:var(--mono); }
+.ts-ceil-label { font-size:10px; color:var(--text-3); text-transform:uppercase; letter-spacing:.06em; }
+.ts-ceiling b { font-size:18px; font-weight:700; color:var(--text); letter-spacing:-0.02em; }
+.ts-ceiling.capped b { color:var(--amber); }
+.ts-ceil-next { font-size:11px; color:var(--text-3); margin-left:auto; }
+.ts-ceil-note { margin-top:8px; font-size:11.5px; line-height:1.5; color:var(--text-3); }
+@media (max-width:560px){ .ts-grid { grid-template-columns:repeat(2,1fr); }
+  .ts-ceil-next { margin-left:0; flex-basis:100%; } }
 
 /* action buttons row */
 .act-row { display:flex; gap:10px; flex-wrap:wrap; margin-bottom:8px; }

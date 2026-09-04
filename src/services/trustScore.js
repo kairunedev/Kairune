@@ -13,6 +13,9 @@
  *  - There is a volume factor (more clean activity means more trust) with
  *    diminishing returns (logarithmic) so it can't be spammed.
  *  - Recency: older events decay a little so the score reflects recent behavior.
+ *  - Corroboration bounds the result: a score built only on self-reported
+ *    history is capped below the top tiers no matter how much of it there is.
+ *    Only verified attestations from independent issuers lift that cap.
  */
 
 // Base weight for each attestation kind.
@@ -153,6 +156,51 @@ function cappedVolumeCount(uncappedClean, cleanByIssuer) {
     total += Math.min(count, PER_ISSUER_VOLUME_CAP);
   }
   return total;
+}
+
+// ---------------------------------------------------------------------------
+// Corroboration ceiling.
+//
+// PER_ISSUER_VOLUME_CAP capped the *volume bonus*, but the volume bonus is only
+// ~200 of a 1000-point scale. The `positive` term was never capped, so raw
+// repetition still carried an agent all the way to the top: 184 unverified
+// peer_vouch rows — which anyone can post about themselves, no issuer, no
+// signature — reached 1000 / PRIME, and therefore the best risk rating the
+// ERC-8126 adapter can emit and the largest suggested spend ceiling.
+//
+// That was live. The #1 agent on the public leaderboard held a perfect score on
+// 2216 self-posted rows and 0 distinct issuers.
+//
+// So a score is now bounded by how well it is *corroborated*. Uncorroborated
+// history still accrues, it just cannot climb past the point where the claim
+// stops being self-evidently checkable. Every tier above the ceiling has to be
+// bought with verified attestations from independent issuers.
+//
+// The ceiling is deliberately expressed in the same units as TIER_THRESHOLDS so
+// the intent is legible: with no corroboration at all you top out inside
+// ESTABLISHED and can never present as TRUSTED or PRIME on self-reported data.
+const UNCORROBORATED_CEILING = 600;
+
+// Each independent issuer that has verified at least one clean attestation
+// lifts the ceiling by this much, saturating at MAX_SCORE. With
+// DIVERSITY_TARGET_ISSUERS-style breadth (4 issuers) the ceiling is gone
+// entirely, which keeps the incentive pointed at breadth rather than volume.
+const CEILING_LIFT_PER_ISSUER = 100;
+
+/**
+ * Highest score this attestation history is allowed to support, given how much
+ * of it is independently corroborated.
+ *
+ * Only *verified* clean attestations carrying an issuer_id count — the same
+ * definition issuerDiversity uses, so the number a caller sees on
+ * /trust-sources explains the ceiling they get here.
+ *
+ * @param {number} distinctIssuers issuers with >=1 verified clean attestation
+ * @returns {number} ceiling in score units
+ */
+function corroborationCeiling(distinctIssuers) {
+  const n = Number.isFinite(distinctIssuers) ? Math.max(0, distinctIssuers) : 0;
+  return Math.min(MAX_SCORE, UNCORROBORATED_CEILING + n * CEILING_LIFT_PER_ISSUER);
 }
 
 // Misconduct is also priced as a *share* of an agent's record, not only as an
@@ -311,8 +359,17 @@ function computeScore(attestations, nowMs, opts = {}) {
     )
   );
 
-  const score = Math.min(additiveScore, ratioScore);
+  // Third bound: corroboration. Repetition alone cannot buy the top tiers.
+  const ceiling = corroborationCeiling(cleanByIssuer.size);
+  const earnedScore = Math.min(additiveScore, ratioScore);
+  const score = Math.min(earnedScore, ceiling);
   const { tier, label } = tierForScore(score);
+
+  // Name the binding rule so a reader never has to reverse-engineer the total.
+  // Ordered by which constraint actually produced `score`.
+  let boundBy = 'additive';
+  if (ceiling < earnedScore) boundBy = 'corroboration-ceiling';
+  else if (ratioScore < additiveScore) boundBy = 'misconduct-ratio';
 
   return {
     score,
@@ -333,7 +390,12 @@ function computeScore(attestations, nowMs, opts = {}) {
       integrityFactor: Math.round(integrity * 1000) / 1000,
       additiveScore,
       ratioScore,
-      boundBy: ratioScore < additiveScore ? 'misconduct-ratio' : 'additive',
+      // What this history could support if it were fully corroborated, and the
+      // ceiling that corroboration actually earned it.
+      earnedScore,
+      corroborationCeiling: ceiling,
+      corroborationCapped: ceiling < earnedScore,
+      boundBy,
     },
     totals: {
       attestations: attestations.length,
@@ -394,6 +456,9 @@ module.exports = {
   INTEGRITY_SMOOTHING,
   INTEGRITY_SLOPE,
   MAX_INTEGRITY_DISCOUNT,
+  UNCORROBORATED_CEILING,
+  CEILING_LIFT_PER_ISSUER,
+  corroborationCeiling,
   computeScore,
   tierForScore,
   labelFor,

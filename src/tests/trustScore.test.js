@@ -9,6 +9,11 @@ const {
   recencyFactor,
   integrityFactor,
   MAX_INTEGRITY_DISCOUNT,
+  corroborationCeiling,
+  UNCORROBORATED_CEILING,
+  CEILING_LIFT_PER_ISSUER,
+  TIER_THRESHOLDS,
+  MAX_SCORE,
 } = require('../services/trustScore');
 
 const now = Date.now();
@@ -22,10 +27,13 @@ test('a new agent (no attestations) gets the baseline score', () => {
 });
 
 test('positive activity raises the score & tier', () => {
+  // Issuer attribution is spread across four issuers because the score is
+  // bounded by corroboration: the real verified path always carries an
+  // issuer_id, and reaching the top tiers requires breadth across issuers.
   const atts = [];
-  for (let i = 0; i < 40; i++) atts.push({ kind: 'task_completed', created_at: fresh, verification_status: 'verified' });
-  for (let i = 0; i < 30; i++) atts.push({ kind: 'clean_payment', created_at: fresh, verification_status: 'verified' });
-  for (let i = 0; i < 10; i++) atts.push({ kind: 'peer_vouch', created_at: fresh, verification_status: 'verified' });
+  for (let i = 0; i < 40; i++) atts.push({ kind: 'task_completed', created_at: fresh, verification_status: 'verified', issuer_id: `iss-${i % 4}` });
+  for (let i = 0; i < 30; i++) atts.push({ kind: 'clean_payment', created_at: fresh, verification_status: 'verified', issuer_id: `iss-${i % 4}` });
+  for (let i = 0; i < 10; i++) atts.push({ kind: 'peer_vouch', created_at: fresh, verification_status: 'verified', issuer_id: `iss-${i % 4}` });
   const r = computeScore(atts, now);
   assert.ok(r.score > 700, 'score should be high, got ' + r.score);
   assert.ok(r.tier >= 3, 'tier should be >= 3');
@@ -126,13 +134,18 @@ test('the score always stays within 0..1000', () => {
 // Build a history big enough that the positive side overflows MAX_SCORE, which
 // is the precondition for the bug. Mirrors the shape of the real production
 // rows: overwhelmingly clean, a small percentage disputed.
+// Attestations are attributed across DIVERSITY_TARGET_ISSUERS issuers so the
+// corroboration ceiling is fully lifted and these tests isolate the misconduct
+// rule they are actually about. Without attribution every one of them would be
+// pinned at the uncorroborated ceiling and the monotonicity they assert would be
+// invisible.
 function highVolume(badCount, badKind = 'dispute', total = 2200) {
   const atts = [];
   for (let i = 0; i < total - badCount; i += 1) {
-    atts.push({ kind: 'task_completed', created_at: fresh, verification_status: 'verified' });
+    atts.push({ kind: 'task_completed', created_at: fresh, verification_status: 'verified', issuer_id: `iss-${i % 4}` });
   }
   for (let i = 0; i < badCount; i += 1) {
-    atts.push({ kind: badKind, created_at: fresh, verification_status: 'verified' });
+    atts.push({ kind: badKind, created_at: fresh, verification_status: 'verified', issuer_id: `iss-${i % 4}` });
   }
   return atts;
 }
@@ -209,12 +222,135 @@ test('integrityFactor is 1 with no misconduct and falls as its share rises', () 
   assert.ok(heavy >= 1 - MAX_INTEGRITY_DISCOUNT, 'the discount stays capped');
 });
 
-test('the breakdown publishes both candidate scores and which one bound', () => {
+test('the breakdown publishes every candidate score and which one bound', () => {
   const r = computeScore(highVolume(100), now);
   assert.strictEqual(typeof r.breakdown.additiveScore, 'number');
   assert.strictEqual(typeof r.breakdown.ratioScore, 'number');
-  // The reported score is always the stricter of the two, so the change can
-  // only ever lower a score relative to the old additive-only model.
-  assert.strictEqual(r.score, Math.min(r.breakdown.additiveScore, r.breakdown.ratioScore));
-  assert.ok(['additive', 'misconduct-ratio'].includes(r.breakdown.boundBy));
+  assert.strictEqual(typeof r.breakdown.corroborationCeiling, 'number');
+  // The reported score is always the strictest bound, so each rule can only
+  // ever lower a score relative to the model without it.
+  assert.strictEqual(
+    r.score,
+    Math.min(
+      r.breakdown.additiveScore,
+      r.breakdown.ratioScore,
+      r.breakdown.corroborationCeiling
+    )
+  );
+  assert.strictEqual(
+    r.breakdown.earnedScore,
+    Math.min(r.breakdown.additiveScore, r.breakdown.ratioScore)
+  );
+  assert.ok(
+    ['additive', 'misconduct-ratio', 'corroboration-ceiling'].includes(
+      r.breakdown.boundBy
+    )
+  );
+});
+
+// ---------------------------------------------------------------------------
+// Corroboration ceiling.
+//
+// These pin a second bug that was live: PER_ISSUER_VOLUME_CAP capped the volume
+// bonus, but the volume bonus is only ~200 of a 1000-point scale and `positive`
+// was never capped. So raw repetition of the cheapest possible input — an
+// unverified peer_vouch, which needs no issuer, no signature and no credentials
+// — still reached a perfect 1000 / PRIME. The #1 agent on the public
+// leaderboard held 1000 on 2216 self-posted rows and 0 distinct issuers, and
+// therefore the best risk rating the ERC-8126 adapter can emit plus the largest
+// suggested spend ceiling.
+// ---------------------------------------------------------------------------
+
+function selfPosted(n, kind = 'peer_vouch') {
+  return Array.from({ length: n }, () => ({
+    kind,
+    created_at: fresh,
+    verification_status: 'unverified',
+  }));
+}
+
+function corroborated(n, issuers, kind = 'clean_payment') {
+  return Array.from({ length: n }, (_, i) => ({
+    kind,
+    created_at: fresh,
+    verification_status: 'verified',
+    issuer_id: `iss-${i % issuers}`,
+  }));
+}
+
+test('self-reported history alone cannot buy the top tiers, at any volume', () => {
+  const trustedThreshold = TIER_THRESHOLDS[3];
+  for (const n of [200, 1000, 5000]) {
+    const r = computeScore(selfPosted(n), now);
+    assert.strictEqual(r.breakdown.distinctIssuers, 0);
+    assert.ok(
+      r.score < trustedThreshold,
+      `${n} self-posted vouches must stay below TRUSTED, got ${r.score}`
+    );
+    assert.ok(r.tier <= 2, `tier must stay <= 2, got ${r.tier}`);
+    // The engine must be honest that it clipped the result rather than quietly
+    // reporting a lower number.
+    assert.strictEqual(r.breakdown.boundBy, 'corroboration-ceiling');
+    assert.strictEqual(r.breakdown.corroborationCapped, true);
+    assert.ok(
+      r.breakdown.earnedScore > r.score,
+      'earnedScore should record what the raw history would have scored'
+    );
+  }
+});
+
+test('the uncorroborated ceiling is exactly UNCORROBORATED_CEILING', () => {
+  const r = computeScore(selfPosted(5000), now);
+  assert.strictEqual(r.score, UNCORROBORATED_CEILING);
+  assert.strictEqual(r.breakdown.corroborationCeiling, UNCORROBORATED_CEILING);
+});
+
+test('each independent issuer lifts the ceiling, saturating at MAX_SCORE', () => {
+  assert.strictEqual(corroborationCeiling(0), UNCORROBORATED_CEILING);
+  assert.strictEqual(
+    corroborationCeiling(1),
+    UNCORROBORATED_CEILING + CEILING_LIFT_PER_ISSUER
+  );
+  assert.strictEqual(corroborationCeiling(4), MAX_SCORE);
+  assert.strictEqual(corroborationCeiling(99), MAX_SCORE, 'saturates, never exceeds');
+  assert.strictEqual(corroborationCeiling(-5), UNCORROBORATED_CEILING, 'negatives floor at 0 issuers');
+  assert.strictEqual(corroborationCeiling(NaN), UNCORROBORATED_CEILING, 'non-finite floors at 0 issuers');
+});
+
+test('breadth across issuers is what unlocks PRIME, not volume', () => {
+  // One issuer vouching 300 times cannot reach PRIME; four issuers can, on far
+  // fewer attestations. That is the incentive the ceiling is meant to create.
+  const oneIssuer = computeScore(corroborated(300, 1), now);
+  const fourIssuers = computeScore(corroborated(120, 4), now);
+
+  assert.strictEqual(oneIssuer.breakdown.distinctIssuers, 1);
+  assert.strictEqual(fourIssuers.breakdown.distinctIssuers, 4);
+  assert.ok(oneIssuer.tier < 4, 'a single issuer must not reach PRIME, got tier ' + oneIssuer.tier);
+  assert.strictEqual(fourIssuers.tier, 4, 'four issuers should reach PRIME');
+  assert.ok(fourIssuers.score > oneIssuer.score);
+});
+
+test('the ceiling never raises a score, only clips it', () => {
+  // A modest corroborated history is nowhere near its ceiling, so the ceiling
+  // must be inert — it is a bound, not a bonus.
+  const r = computeScore(corroborated(6, 2), now);
+  assert.ok(r.score < r.breakdown.corroborationCeiling);
+  assert.strictEqual(r.score, r.breakdown.earnedScore);
+  assert.strictEqual(r.breakdown.corroborationCapped, false);
+  assert.notStrictEqual(r.breakdown.boundBy, 'corroboration-ceiling');
+});
+
+test('misconduct still binds when it is stricter than the ceiling', () => {
+  // Fully corroborated (ceiling lifted to MAX_SCORE) but a bad record, so the
+  // misconduct rule must be the one reported.
+  const r = computeScore(highVolume(100), now);
+  assert.strictEqual(r.breakdown.corroborationCeiling, MAX_SCORE);
+  assert.strictEqual(r.breakdown.boundBy, 'misconduct-ratio');
+  assert.ok(r.score < MAX_SCORE);
+});
+
+test('a new agent is unaffected by the ceiling', () => {
+  const r = computeScore([], now);
+  assert.strictEqual(r.score, 120);
+  assert.strictEqual(r.breakdown.corroborationCapped, false);
 });

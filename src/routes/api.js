@@ -8,7 +8,7 @@
  *   GET    /api/agents                       list agents (leaderboard)
  *   POST   /api/agents                       register a new agent
  *   GET    /api/agents/:id                    agent detail + score breakdown
- *   GET    /api/agents/:id/trust-sources      issuer-diversity of verified trust
+ *   GET    /api/agents/:id/trust-sources      issuer-diversity + the score ceiling it earns
  *   GET    /api/agents/:id/rank               live leaderboard rank + percentile
  *   GET    /api/agents/:id/rank/neighbors     agents ranked just above & below
  *   GET    /api/agents/:id/tier               tier progress + points to next tier
@@ -166,6 +166,11 @@ router.get('/meta', (req, res) => {
     idempotency_header: 'Idempotency-Key',
     idempotency_max_key_length: spendService.MAX_IDEMPOTENCY_KEY_LEN,
     diversity_target_issuers: issuerDiversity.DIVERSITY_TARGET_ISSUERS,
+    // Corroboration ceiling — a score built purely on self-reported history is
+    // capped below the top tiers regardless of volume. Published so a payer can
+    // check the rule rather than trust the number.
+    uncorroborated_ceiling: trustScore.UNCORROBORATED_CEILING,
+    ceiling_lift_per_issuer: trustScore.CEILING_LIFT_PER_ISSUER,
     webhook_events: webhookService.EVENTS,
     chain: ROBINHOOD_CHAIN_NAME,
     chain_id: ROBINHOOD_CHAIN_ID,
@@ -687,6 +692,15 @@ router.get(
       share: p.share,
     }));
 
+    // The score ceiling this diversity earns, and what one more issuer buys.
+    // Diversity was measurable here but never actionable: an agent capped by
+    // corroboration could see `distinct_issuers: 0` without learning that this
+    // is the reason its score stopped climbing, or what would move it.
+    const ceiling = trustScore.corroborationCeiling(diversity.distinct_issuers);
+    const nextCeiling = trustScore.corroborationCeiling(
+      diversity.distinct_issuers + 1
+    );
+
     res.json({
       agent_id: agent.id,
       handle: agent.handle,
@@ -697,6 +711,20 @@ router.get(
       diversity_index: diversity.diversity_index,
       confidence: diversity.confidence,
       target_issuers: issuerDiversity.DIVERSITY_TARGET_ISSUERS,
+      // Corroboration ceiling — why a score stopped climbing, and the fix.
+      score_ceiling: ceiling,
+      score_ceiling_next_issuer: nextCeiling,
+      issuers_to_remove_ceiling: Math.max(
+        0,
+        Math.ceil(
+          (trustScore.MAX_SCORE - trustScore.UNCORROBORATED_CEILING) /
+            trustScore.CEILING_LIFT_PER_ISSUER
+        ) - diversity.distinct_issuers
+      ),
+      ceiling_note:
+        diversity.distinct_issuers === 0
+          ? `No verified attestations, so this agent's score is capped at ${ceiling} and cannot present as TRUSTED or PRIME on self-reported history alone.`
+          : `Verified attestations from ${diversity.distinct_issuers} issuer(s) raise this agent's score ceiling to ${ceiling}.`,
       per_issuer,
     });
   })
