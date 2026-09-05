@@ -320,13 +320,150 @@ async function buildReceipt(spend) {
   };
 }
 
+// ── Signed counterparty verdict ─────────────────────────────────────────────
+//
+// A receipt proves "this spend happened". A signed verdict proves "Kairune was
+// asked whether to trust THIS counterparty at THIS amount at THIS time, and
+// answered X". Built for Virtuals' ACP: a buyer agent can attach the signed
+// verdict to the escrow job it opens, so the go/no-go decision it acted on is
+// attributable and non-repudiable — a third party (the seller, an arbiter, the
+// chain) can verify offline with the published platform key that Kairune really
+// returned that verdict, without trusting the buyer's copy of the JSON.
+//
+// Only the decision-bearing fields are signed, never the prose in `checks[]`:
+// the signature is a commitment to the outcome (verdict + the counterparty
+// identity + the amount the verdict was scoped to + the moment), not to the
+// human-readable explanation, which can be regenerated and reworded freely.
+const VERDICT_CANONICAL_FIELDS = Object.freeze([
+  'counterparty_handle',
+  'counterparty_wallet',
+  'issued_at',
+  'registered',
+  'requested_amount',
+  'score',
+  'suggested_max_amount',
+  'tier',
+  'verdict',
+]);
+
+/**
+ * Build the canonical, byte-stable payload string for a counterparty verdict.
+ * Same discipline as receipts: fixed key order, numbers coerced, empty/absent
+ * strings become null, unknown fields ignored — so signing and verification
+ * always agree byte-for-byte regardless of how the caller ordered its JSON.
+ * @param {object} fields
+ * @returns {string}
+ */
+function canonicalVerdictPayload(fields = {}) {
+  const numberFields = new Set([
+    'requested_amount',
+    'score',
+    'suggested_max_amount',
+    'tier',
+  ]);
+  const normalized = {};
+  for (const key of VERDICT_CANONICAL_FIELDS) {
+    let value = fields[key];
+    if (key === 'registered') {
+      value = Boolean(value);
+    } else if (numberFields.has(key)) {
+      // requested_amount is legitimately absent (no amount supplied); keep it
+      // null rather than coercing to 0, which would sign a different claim.
+      value =
+        value === undefined || value === null || value === ''
+          ? null
+          : Number(value);
+      if (value !== null && !Number.isFinite(value)) value = null;
+    } else {
+      value =
+        value === undefined || value === null || value === ''
+          ? null
+          : String(value);
+    }
+    normalized[key] = value;
+  }
+  return JSON.stringify(normalized);
+}
+
+/**
+ * Extract the decision-bearing fields from an assessCounterparty result.
+ * Single source of truth for what a verdict signature covers, so signing and
+ * any later re-verification derive the payload identically.
+ * @param {object} verdict result from counterpartyService.assessCounterparty
+ * @param {string} issuedAt ISO timestamp the verdict was signed at
+ * @returns {object}
+ */
+function verdictFieldsFromResult(verdict, issuedAt) {
+  const cp = verdict.counterparty || {};
+  return {
+    counterparty_handle: cp.handle ?? null,
+    counterparty_wallet: (cp.wallet ?? verdict.wallet ?? null),
+    issued_at: issuedAt,
+    registered: Boolean(verdict.registered),
+    requested_amount: verdict.requested_amount ?? null,
+    score: verdict.registered ? (cp.score ?? null) : null,
+    suggested_max_amount: verdict.suggested_max_amount ?? null,
+    tier: verdict.registered ? (cp.tier ?? null) : null,
+    verdict: verdict.verdict,
+  };
+}
+
+/**
+ * Sign a counterparty verdict with the platform key and return everything a
+ * verifier needs. The key is registered in `platform_keys` (best-effort, same
+ * as receipts) so the verdict keeps verifying across a key rotation.
+ * @param {object} verdict result from counterpartyService.assessCounterparty
+ * @param {{issuedAt?:string}} [opts]
+ * @returns {Promise<{signed_fields:object, canonical:string, signature:string, algorithm:string, key_id:string|null, public_key:string, ephemeral_key:boolean, signed_field_order:string[]}>}
+ */
+async function signVerdict(verdict, { issuedAt } = {}) {
+  const issued = issuedAt || new Date().toISOString();
+  const fields = verdictFieldsFromResult(verdict, issued);
+  const canonical = canonicalVerdictPayload(fields);
+  const { privateKey } = getPlatformKey();
+  const signature = crypto
+    .sign(null, Buffer.from(canonical), privateKey)
+    .toString('base64');
+  const keyId = await ensurePlatformKeyRegistered();
+  const { publicKeyPem, ephemeral } = getPlatformKey();
+  return {
+    signed_fields: fields,
+    canonical,
+    signature,
+    algorithm: 'ed25519',
+    key_id: keyId,
+    public_key: publicKeyPem,
+    ephemeral_key: ephemeral,
+    signed_field_order: [...VERDICT_CANONICAL_FIELDS],
+  };
+}
+
+/**
+ * Verify a signed verdict against a public key (defaults to the current
+ * platform key). Rebuilds the canonical payload from the signed fields so a
+ * caller cannot smuggle a tampered `canonical` past a matching signature.
+ * Never throws — malformed input returns false.
+ * @param {{signed_fields:object, signatureB64:string, publicKeyPem?:string}} args
+ * @returns {boolean}
+ */
+function verifyVerdictSignature({ signed_fields, signatureB64, publicKeyPem }) {
+  const pem = publicKeyPem || getPlatformKey().publicKeyPem;
+  const canonical = canonicalVerdictPayload(signed_fields || {});
+  return verifySignature({ publicKeyPem: pem, canonical, signatureB64 });
+}
+
 module.exports = {
   RECEIPT_CANONICAL_FIELDS,
+  VERDICT_CANONICAL_FIELDS,
   canonicalReceiptPayload,
+  canonicalVerdictPayload,
   receiptFieldsFromSpend,
+  verdictFieldsFromResult,
   getPlatformKey,
   signReceipt,
   verifyReceiptSignature,
+  signVerdict,
+  verifyVerdictSignature,
   ensurePlatformKeyRegistered,
   signSpendReceipt,
   resolveReceiptKey,
