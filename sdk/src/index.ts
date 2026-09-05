@@ -540,6 +540,36 @@ export interface WalletProof {
 export type CounterpartyCheckStatus = 'pass' | 'warn' | 'fail'
 export type CounterpartyVerdict = 'proceed' | 'review' | 'decline'
 
+/**
+ * A signed, non-repudiable counterparty verdict. Returned under
+ * `CounterpartyReport.attestation` when a check is requested with `sign: true`.
+ * The signature is an Ed25519 signature (the platform's receipt-signing key)
+ * over `signed_fields` only — the decision, the counterparty identity, the
+ * amount the verdict was scoped to, score/tier, and the timestamp. Verify it
+ * offline with `public_key`, or POST { mode:'verdict', public_key, signature,
+ * fields: signed_fields } to `/api/verify`.
+ */
+export interface SignedVerdict {
+  signed_fields: {
+    counterparty_handle: string | null
+    counterparty_wallet: string | null
+    issued_at: string
+    registered: boolean
+    requested_amount: number | null
+    score: number | null
+    suggested_max_amount: number | null
+    tier: number | null
+    verdict: CounterpartyVerdict
+  }
+  canonical: string
+  signature: string
+  algorithm: 'ed25519'
+  key_id: string | null
+  public_key: string
+  ephemeral_key: boolean
+  signed_field_order: string[]
+}
+
 /** One named check that fed into the counterparty verdict. */
 export interface CounterpartyCheck {
   id: string
@@ -594,6 +624,8 @@ export interface CounterpartyReport {
   } | null
   /** Present only when registered === false. */
   wallet?: string | null
+  /** Present only when the check was requested with `sign: true`. */
+  attestation?: SignedVerdict
 }
 
 /**
@@ -1010,13 +1042,18 @@ export class Kairune {
    * 'decline' }` instead of throwing, so "unknown counterparty" is a normal
    * answer you can branch on. An unresolvable non-wallet reference throws
    * KairuneError(404).
+   *
+   * Pass `sign: true` to also get `attestation` — the same verdict signed with
+   * the platform key, so you can attach an attributable go/no-go to an escrow
+   * job and let the seller or an arbiter verify it without trusting your copy.
    */
   async checkCounterparty(
     counterparty: string,
-    opts: { amount?: number } = {}
+    opts: { amount?: number; sign?: boolean } = {}
   ): Promise<CounterpartyReport> {
-    const body: { counterparty: string; amount?: number } = { counterparty }
+    const body: { counterparty: string; amount?: number; sign?: boolean } = { counterparty }
     if (opts.amount != null) body.amount = opts.amount
+    if (opts.sign === true) body.sign = true
     return this.request<CounterpartyReport>('POST', '/counterparty/check', body)
   }
 

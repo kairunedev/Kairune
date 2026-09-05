@@ -15,7 +15,7 @@
  *   GET    /api/agents/:id/next-steps         simulated route to the next tier + downgrade risk
  *   GET    /api/agents/:id/spends             merged spend history across all of the agent's permissions
  *   GET    /api/agents/:id/spend-summary      aggregated spend totals by permission / category / payee
- *   POST   /api/counterparty/check           pre-flight go/no-go before paying another agent
+ *   POST   /api/counterparty/check           pre-flight go/no-go before paying another agent ({sign:true} for a signed verdict)
  *   POST   /api/counterparty/compare         rank competing counterparties, pick a winner
  *   PATCH  /api/agents/:id/status             suspend / activate an agent
  *   DELETE /api/agents/:id                    delete an agent
@@ -46,7 +46,7 @@
  *   GET    /api/stats/organic                  synthetic vs organic breakdown
  *   GET    /api/feed                           public spend activity feed
  *   GET    /api/meta                           metadata (kinds, tiers)
- *   POST   /api/verify                          public, stateless Ed25519 signature check
+ *   POST   /api/verify                          public, stateless Ed25519 signature check (attestation or verdict)
  *   GET    /api/erc8126/agents/:id              ERC-8126 derived adapter (not compliant) — same as /api/agents/:id/erc8126
  *   GET    /api/agents/:id/erc8126              ERC-8126 derived adapter (not compliant)
  */
@@ -132,6 +132,10 @@ router.get('/meta', (req, res) => {
     signature_algorithm: 'ed25519',
     signature_max_age_seconds: replayGuard.maxAgeSeconds(),
     verify_endpoint: '/api/verify',
+    // /api/verify checks both attestation signatures and signed counterparty
+    // verdicts, so an offline ACP verifier needs no SDK. Auto-detected, or set
+    // `mode` explicitly.
+    verify_modes: ['attestation', 'verdict'],
     trust_sources_endpoint: '/api/agents/:id/trust-sources',
     rank_endpoint: '/api/agents/:id/rank',
     rank_neighbors_endpoint: '/api/agents/:id/rank/neighbors',
@@ -140,6 +144,11 @@ router.get('/meta', (req, res) => {
     counterparty_check_endpoint: '/api/counterparty/check',
     counterparty_compare_endpoint: '/api/counterparty/compare',
     counterparty_compare_max_candidates: agentService.MAX_COMPARE_CANDIDATES,
+    // A counterparty verdict can be returned signed (POST /counterparty/check
+    // {sign:true}), so a buyer can attach an attributable go/no-go to an ACP
+    // escrow job and anyone can verify it offline with the published key.
+    counterparty_signed_verdict: true,
+    counterparty_verdict_signed_fields: receiptService.VERDICT_CANONICAL_FIELDS,
     spend_counterparty_gate: true,
     spend_counterparty_blocking_verdicts: spendService.GATE_BLOCKING_VERDICTS,
     counterparty_policies: permissionService.COUNTERPARTY_POLICIES,
@@ -253,9 +262,36 @@ router.get('/meta', (req, res) => {
 //   }
 //
 // Response: { verified: bool, algorithm, canonical, reason }
+//
+// The same endpoint also verifies a signed COUNTERPARTY VERDICT (the go/no-go a
+// buyer agent attaches to a Virtuals ACP escrow job). A verdict is signed over
+// a different canonical field set than an attestation, so the caller either
+// says so with `mode: "verdict"`, or the endpoint auto-detects it: a payload
+// that carries a `verdict` field but no `kind` field is a verdict. This lets an
+// offline ACP verifier — an escrow keeper, the seller, an arbiter — check the
+// decision with only the published platform key, never our SDK. "Verify, don't
+// trust" applies to the signal the payer actually acted on, not just receipts.
 // ---------------------------------------------------------------------------
+const VERIFY_MODES = Object.freeze(['attestation', 'verdict']);
+
+// Decide which canonical shape a /verify request is about. Explicit mode wins;
+// otherwise a payload with `verdict` and no `kind` is treated as a verdict.
+function resolveVerifyMode(mode, fields) {
+  if (mode != null) {
+    if (!VERIFY_MODES.includes(mode)) {
+      const err = new Error(`Field "mode", when provided, must be one of: ${VERIFY_MODES.join(', ')}`);
+      err.status = 400;
+      throw err;
+    }
+    return mode;
+  }
+  const looksLikeVerdict =
+    fields && typeof fields === 'object' && 'verdict' in fields && !('kind' in fields);
+  return looksLikeVerdict ? 'verdict' : 'attestation';
+}
+
 router.post('/verify', (req, res) => {
-  const { public_key, signature, fields } = req.body || {};
+  const { public_key, signature, fields, mode } = req.body || {};
 
   if (typeof public_key !== 'string' || public_key.trim() === '') {
     const err = new Error('Field "public_key" (SPKI PEM) is required');
@@ -273,8 +309,19 @@ router.post('/verify', (req, res) => {
     throw err;
   }
 
-  // Recompute the exact canonical bytes that would have been signed.
-  const canonical = verification.canonicalPayload(fields);
+  const resolvedMode = resolveVerifyMode(mode, fields);
+
+  // Recompute the exact canonical bytes that would have been signed, using the
+  // canonicalization that matches the payload's shape.
+  const canonical =
+    resolvedMode === 'verdict'
+      ? receiptService.canonicalVerdictPayload(fields)
+      : verification.canonicalPayload(fields);
+  const signedFields =
+    resolvedMode === 'verdict'
+      ? receiptService.VERDICT_CANONICAL_FIELDS
+      : verification.CANONICAL_FIELDS;
+
   const verified = verification.verifySignature({
     publicKeyPem: public_key,
     canonical,
@@ -283,9 +330,10 @@ router.post('/verify', (req, res) => {
 
   res.json({
     verified,
+    mode: resolvedMode,
     algorithm: 'ed25519',
     canonical,
-    signed_fields: verification.CANONICAL_FIELDS,
+    signed_fields: signedFields,
     reason: verified ? 'ok' : 'signature_invalid',
   });
 });
@@ -569,11 +617,21 @@ router.get(
 //
 // Public, read-only, no auth, nothing persisted. Deterministic: the verdict is
 // a pure function of the counterparty's stored profile and attestation history.
+//
+// Pass `sign: true` to also receive a signed, non-repudiable version of the
+// verdict under `attestation`: an Ed25519 signature (the same platform key that
+// signs spend receipts) over the decision-bearing fields only — verdict,
+// counterparty identity, the amount it was scoped to, score/tier, and the
+// timestamp. A buyer agent can attach that to a Virtuals ACP escrow job so the
+// go/no-go it acted on is attributable, and a seller / arbiter / keeper can
+// verify it OFFLINE against the published platform key (or POST it to
+// /api/verify with mode:"verdict") — without trusting the buyer's copy of the
+// JSON. The prose in `checks[]` is deliberately NOT signed; it can be reworded.
 router.post(
   '/counterparty/check',
   wrap(async (req, res) => {
     requireFields(req.body, ['counterparty']);
-    const { counterparty, amount = null } = req.body;
+    const { counterparty, amount = null, sign = false } = req.body;
 
     if (amount != null) {
       const n = Number(amount);
@@ -590,6 +648,11 @@ router.post(
       err.status = 404;
       throw err;
     }
+
+    if (sign === true) {
+      result.attestation = await receiptService.signVerdict(result);
+    }
+
     res.json(result);
   })
 );
