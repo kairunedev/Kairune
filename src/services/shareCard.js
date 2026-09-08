@@ -405,10 +405,13 @@ function renderMoveCardSvg(m = {}) {
   // infer from the ranks. Ties / missing data read as a neutral "held".
   const up = m.direction === 'up' || (m.direction == null && from > 0 && to > 0 && to < from);
   const down = m.direction === 'down' || (m.direction == null && from > 0 && to > 0 && to > from);
+  // Nothing moved: render the single rank being held rather than an "x -> x"
+  // arrow, which would read like a move that didn't happen.
+  const flat = !up && !down;
   const delta = Number.isFinite(Number(m.delta)) ? Math.abs(Number(m.delta)) : Math.abs(from - to);
   const accent = up ? COLORS.signal : down ? COLORS.text2 : TIER_ACCENT[tier];
 
-  const headline = up ? 'CLIMBED' : down ? 'SLIPPED' : 'HELD';
+  const headline = up ? 'CLIMBED' : down ? 'SLIPPED' : 'HOLDING';
   const chevron = up
     ? `<polygon points="0,26 22,0 44,26 30,26 30,52 14,52 14,26" fill="${accent}"/>`
     : down
@@ -418,13 +421,19 @@ function renderMoveCardSvg(m = {}) {
     ? `+${delta} place${delta === 1 ? '' : 's'}`
     : down
       ? `-${delta} place${delta === 1 ? '' : 's'}`
-      : 'position held';
+      : 'no movement recorded yet';
+  // "CLIMBED/SLIPPED THE LEADERBOARD" but "HOLDING ON THE LEADERBOARD".
+  const headlineText = flat ? 'HOLDING ON THE LEADERBOARD' : `${headline} THE LEADERBOARD`;
 
   const fromText = from > 0 ? `#${from}` : '—';
   const toText = to > 0 ? `#${to}` : '—';
   const ofTotal = total > 0 ? `of ${total}` : '';
 
-  return `<svg xmlns="http://www.w3.org/2000/svg" width="${W}" height="${H}" viewBox="0 0 ${W} ${H}" role="img" aria-label="Kairune: ${handle} ${headline.toLowerCase()} to ${toText}">
+  const aria = flat
+    ? `Kairune: ${handle} is holding ${toText} on the leaderboard`
+    : `Kairune: ${handle} ${headline.toLowerCase()} to ${toText}`;
+
+  return `<svg xmlns="http://www.w3.org/2000/svg" width="${W}" height="${H}" viewBox="0 0 ${W} ${H}" role="img" aria-label="${aria}">
   <defs>
     <linearGradient id="mbg" x1="0" y1="0" x2="1" y2="1">
       <stop offset="0" stop-color="#0B0C0E"/>
@@ -455,14 +464,16 @@ function renderMoveCardSvg(m = {}) {
   <text x="80" y="212" font-family="${SANS}" font-size="64" font-weight="700" fill="${COLORS.text}">${handle}</text>
   <g transform="translate(80,250)">
     <g transform="translate(0,4) scale(0.9)">${chevron}</g>
-    <text x="56" y="42" font-family="${MONO}" font-size="40" font-weight="700" letter-spacing="4" fill="${accent}">${headline} THE LEADERBOARD</text>
+    <text x="56" y="42" font-family="${MONO}" font-size="40" font-weight="700" letter-spacing="4" fill="${accent}">${headlineText}</text>
   </g>
 
-  <!-- the move: #from -> #to -->
+  <!-- the move: #from -> #to (or a single rank when nothing moved) -->
   <g transform="translate(80,330)" font-family="${MONO}">
-    <text x="0" y="96" font-size="132" font-weight="700" fill="${COLORS.text3}">${fromText}</text>
+    ${flat
+      ? `<text x="0" y="96" font-size="132" font-weight="700" fill="${COLORS.text}">${toText}</text>`
+      : `<text x="0" y="96" font-size="132" font-weight="700" fill="${COLORS.text3}">${fromText}</text>
     <text x="${86 + fromText.length * 76}" y="90" font-size="96" font-weight="700" fill="${accent}">→</text>
-    <text x="${190 + fromText.length * 76}" y="96" font-size="132" font-weight="700" fill="${COLORS.text}">${toText}</text>
+    <text x="${190 + fromText.length * 76}" y="96" font-size="132" font-weight="700" fill="${COLORS.text}">${toText}</text>`}
     <text x="2" y="150" font-size="30" fill="${COLORS.text2}">${escapeXml(deltaText)}${ofTotal ? '  ·  ' + escapeXml(ofTotal) : ''}</text>
   </g>
 

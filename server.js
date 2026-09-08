@@ -391,6 +391,15 @@ app.get('/a/:handle/rank.svg', async (req, res, next) => {
 async function resolveMove(handle, windowHours) {
   const base = await agentService.getAgent(handle);
   if (!base) return { handle, moves: 0 };
+
+  // Current standing, used to fill in score/tier and — when there is no move to
+  // show — to render the position the agent is holding. Null for agents with no
+  // public rank (demo/test/non-EVM), which then read as a bare "held" card.
+  const now = await agentService.getRank(base.id);
+  const standing = now
+    ? { total: now.total, score: now.score, tier: now.tier, label: now.label }
+    : {};
+
   if (windowHours && Number(windowHours) > 0) {
     // Reuse the movers aggregator scoped to this one agent so a windowed card
     // and the /api/movers feed can never disagree about the same window.
@@ -400,10 +409,22 @@ async function resolveMove(handle, windowHours) {
       direction: 'all',
     });
     const mine = out.movers.find((m) => m.handle === base.handle);
-    if (mine) return { ...mine, moves: mine.moves };
+    if (mine) return { ...standing, ...mine, moves: mine.moves };
   }
   const hist = await agentService.getRankHistory(base.id, { limit: 1 });
-  if (!hist || !hist.moves.length) return { handle: base.handle, moves: 0 };
+  if (!hist || !hist.moves.length) {
+    // No recorded movement. Show the honest truth: the rank they hold right
+    // now, with their real score and tier — never an invented climb.
+    return {
+      handle: base.handle,
+      ...standing,
+      from_rank: now ? now.rank : 0,
+      to_rank: now ? now.rank : 0,
+      direction: 'flat',
+      delta: 0,
+      moves: 0,
+    };
+  }
   const last = hist.moves[0];
   return {
     handle: base.handle,

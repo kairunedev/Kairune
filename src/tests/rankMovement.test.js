@@ -217,13 +217,37 @@ test('move card for an agent with no moves is honest, not a fake climb', async (
   // No fabricated climb: it must not claim CLIMBED, and shows the em-dash
   // placeholder ranks rather than invented numbers.
   assert.doesNotMatch(res.body, /CLIMBED THE LEADERBOARD/);
-  assert.match(res.body, /HELD THE LEADERBOARD|—/);
+  assert.doesNotMatch(res.body, /SLIPPED THE LEADERBOARD/);
+  assert.match(res.body, /HOLDING ON THE LEADERBOARD/);
+  assert.match(res.body, /no movement recorded yet/);
+  // A flat card shows one rank, not a "#n -> #n" arrow implying a move.
+  assert.doesNotMatch(res.body, /→/);
 });
+
+test('a no-moves card still shows the real score, tier and held rank', async () => {
+  // Regression: the first cut rendered "SCORE 0 / UNRATED" for any agent
+  // without recorded movement, understating agents that genuinely rank well.
+  const rank = await agentService.getRank(topDog);
+  assert.ok(rank, 'topdog is publicly ranked');
+  const res = await get('/a/rm-topdog/move.svg');
+  assert.equal(res.status, 200);
+  const hist = await agentService.getRankHistory(topDog, { limit: 1 });
+  if (!hist.moves.length) {
+    assert.match(res.body, new RegExp(`>${rank.score}<`), 'real score rendered');
+    assert.match(res.body, new RegExp(escapeRe(rank.label)), 'real tier label rendered');
+    assert.match(res.body, new RegExp(`#${rank.rank}`), 'held rank rendered');
+    assert.doesNotMatch(res.body, />0<tspan/, 'never a zero score');
+  }
+});
+
+function escapeRe(s) {
+  return String(s).replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
 
 test('renderMoveCardSvg is defensive with missing fields', () => {
   const svg = renderMoveCardSvg({ handle: 'x' });
   assert.match(svg, /<svg/);
-  assert.match(svg, /HELD THE LEADERBOARD/); // neutral when no ranks given
+  assert.match(svg, /HOLDING ON THE LEADERBOARD/); // neutral when no ranks given
   const climb = renderMoveCardSvg({ handle: 'y', from_rank: 12, to_rank: 4, total: 200, direction: 'up', delta: 8, score: 700, tier: 3, label: 'TRUSTED' });
   assert.match(climb, /CLIMBED THE LEADERBOARD/);
   assert.match(climb, /#12/);
