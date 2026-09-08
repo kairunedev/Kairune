@@ -22,6 +22,7 @@ const {
   renderLeaderboardSvg,
   renderBadgeSvg,
   renderRankBadgeSvg,
+  renderMoveCardSvg,
 } = require('./src/services/shareCard');
 const { flattenTextToPaths } = require('./src/services/svgText');
 
@@ -376,6 +377,73 @@ app.get('/a/:handle/rank.svg', async (req, res, next) => {
     // Badges are hotlinked cross-origin from READMEs, so CORS must be open.
     res.setHeader('Access-Control-Allow-Origin', '*');
     res.type('image/svg+xml').send(svg);
+  } catch (err) {
+    next(err);
+  }
+});
+
+// Resolve the move a card should depict. By default it's the agent's most
+// recent leaderboard move; ?window=<hours> instead depicts the NET move over
+// that window (from where they started to where they are now), which is what a
+// "climbed this week" brag wants. Returns null when the agent has no recorded
+// moves (brand-new, or never publicly ranked) so callers can render an honest
+// "no moves yet" card rather than a fake climb.
+async function resolveMove(handle, windowHours) {
+  const base = await agentService.getAgent(handle);
+  if (!base) return { handle, moves: 0 };
+  if (windowHours && Number(windowHours) > 0) {
+    // Reuse the movers aggregator scoped to this one agent so a windowed card
+    // and the /api/movers feed can never disagree about the same window.
+    const out = await agentService.getTopMovers({
+      windowHours,
+      limit: 50,
+      direction: 'all',
+    });
+    const mine = out.movers.find((m) => m.handle === base.handle);
+    if (mine) return { ...mine, moves: mine.moves };
+  }
+  const hist = await agentService.getRankHistory(base.id, { limit: 1 });
+  if (!hist || !hist.moves.length) return { handle: base.handle, moves: 0 };
+  const last = hist.moves[0];
+  return {
+    handle: base.handle,
+    from_rank: last.previous_rank,
+    to_rank: last.rank,
+    delta: last.delta,
+    direction: last.direction,
+    total: last.total,
+    score: last.score,
+    tier: last.tier,
+    label: last.label,
+    moves: 1,
+  };
+}
+
+// Shareable "rank move" card — the competitive brag: "climbed #12 -> #4".
+// SVG for hotlinking, PNG for X/OG unfurls. ?window=<hours> depicts the net
+// move over a window instead of the single latest move. An agent with no
+// recorded moves gets an honest "no moves yet" card, never a fabricated climb.
+app.get('/a/:handle/move.svg', async (req, res, next) => {
+  try {
+    const handle = String(req.params.handle).trim().toLowerCase();
+    const move = await resolveMove(handle, req.query.window);
+    const svg = renderMoveCardSvg(move);
+    res.setHeader('Access-Control-Allow-Origin', '*');
+    res.setHeader('Cache-Control', 'public, max-age=60, s-maxage=60');
+    res.type('image/svg+xml').send(svg);
+  } catch (err) {
+    next(err);
+  }
+});
+
+app.get('/a/:handle/move.png', async (req, res, next) => {
+  try {
+    const handle = String(req.params.handle).trim().toLowerCase();
+    const move = await resolveMove(handle, req.query.window);
+    const png = svgToPng(renderMoveCardSvg(move));
+    res.setHeader('Access-Control-Allow-Origin', '*');
+    res.setHeader('Cache-Control', 'public, max-age=60, s-maxage=60');
+    res.type('image/png').send(png);
   } catch (err) {
     next(err);
   }

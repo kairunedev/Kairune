@@ -376,11 +376,116 @@ function renderRankBadgeSvg(r = {}) {
 </svg>`;
 }
 
+/**
+ * Build a 1200×630 SVG "rank move" card — the shareable moment when an agent
+ * climbs (or slips) on the leaderboard: "climbed #12 -> #4". This is the
+ * competitive brag artifact; the numbers are real, taken from a rank_history
+ * row, so a screenshot cannot be quietly inflated.
+ *
+ * A promotion (direction 'up', a smaller rank number) is rendered in the signal
+ * colour with an up chevron; a slip is rendered muted with a down chevron. The
+ * big statement is the arrow "#from -> #to"; the delta ("+8 places") is the
+ * subhead. Falls back gracefully if from/to are missing.
+ *
+ * @param {object} m { handle, from_rank, to_rank, delta, direction, total,
+ *   score, tier, label }
+ * @returns {string} SVG markup
+ */
+function renderMoveCardSvg(m = {}) {
+  const W = 1200;
+  const H = 630;
+  const handle = escapeXml(m.handle || 'unknown');
+  const from = Number(m.from_rank) || 0;
+  const to = Number(m.to_rank) || 0;
+  const total = Number(m.total) || 0;
+  const score = Number(m.score) || 0;
+  const tier = Math.max(0, Math.min(4, Number(m.tier) || 0));
+  const label = m.label || TIER_SHORT[tier] || 'UNRATED';
+  // A promotion is a smaller rank number. Trust an explicit direction, else
+  // infer from the ranks. Ties / missing data read as a neutral "held".
+  const up = m.direction === 'up' || (m.direction == null && from > 0 && to > 0 && to < from);
+  const down = m.direction === 'down' || (m.direction == null && from > 0 && to > 0 && to > from);
+  const delta = Number.isFinite(Number(m.delta)) ? Math.abs(Number(m.delta)) : Math.abs(from - to);
+  const accent = up ? COLORS.signal : down ? COLORS.text2 : TIER_ACCENT[tier];
+
+  const headline = up ? 'CLIMBED' : down ? 'SLIPPED' : 'HELD';
+  const chevron = up
+    ? `<polygon points="0,26 22,0 44,26 30,26 30,52 14,52 14,26" fill="${accent}"/>`
+    : down
+      ? `<polygon points="0,26 14,26 14,0 30,0 30,26 44,26 22,52" fill="${accent}"/>`
+      : `<rect x="6" y="22" width="32" height="10" rx="3" fill="${accent}"/>`;
+  const deltaText = up
+    ? `+${delta} place${delta === 1 ? '' : 's'}`
+    : down
+      ? `-${delta} place${delta === 1 ? '' : 's'}`
+      : 'position held';
+
+  const fromText = from > 0 ? `#${from}` : '—';
+  const toText = to > 0 ? `#${to}` : '—';
+  const ofTotal = total > 0 ? `of ${total}` : '';
+
+  return `<svg xmlns="http://www.w3.org/2000/svg" width="${W}" height="${H}" viewBox="0 0 ${W} ${H}" role="img" aria-label="Kairune: ${handle} ${headline.toLowerCase()} to ${toText}">
+  <defs>
+    <linearGradient id="mbg" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#0B0C0E"/>
+      <stop offset="1" stop-color="#141518"/>
+    </linearGradient>
+    <radialGradient id="mglow" cx="0.5" cy="0.0" r="0.9">
+      <stop offset="0" stop-color="${accent}" stop-opacity="0.16"/>
+      <stop offset="1" stop-color="${accent}" stop-opacity="0"/>
+    </radialGradient>
+  </defs>
+
+  <rect width="${W}" height="${H}" fill="url(#mbg)"/>
+  <rect width="${W}" height="${H}" fill="url(#mglow)"/>
+  <rect x="0" y="0" width="${W}" height="6" fill="${accent}"/>
+
+  <!-- logo mark + wordmark -->
+  <g transform="translate(80,72)">
+    <polygon points="24,0 45.6,12.5 45.6,37.5 24,50 2.4,37.5 2.4,12.5" fill="${COLORS.signal}"/>
+    <g fill="none" stroke="${COLORS.signalInk}" stroke-width="4.2" stroke-linecap="round" stroke-linejoin="round">
+      <line x1="18" y1="14" x2="18" y2="36"/>
+      <line x1="18" y1="25" x2="30" y2="14"/>
+      <line x1="18" y1="25" x2="30" y2="36"/>
+    </g>
+    <text x="66" y="34" font-family="${SANS}" font-size="34" font-weight="600" fill="${COLORS.text}">Kairune</text>
+  </g>
+
+  <!-- agent handle + headline -->
+  <text x="80" y="212" font-family="${SANS}" font-size="64" font-weight="700" fill="${COLORS.text}">${handle}</text>
+  <g transform="translate(80,250)">
+    <g transform="translate(0,4) scale(0.9)">${chevron}</g>
+    <text x="56" y="42" font-family="${MONO}" font-size="40" font-weight="700" letter-spacing="4" fill="${accent}">${headline} THE LEADERBOARD</text>
+  </g>
+
+  <!-- the move: #from -> #to -->
+  <g transform="translate(80,330)" font-family="${MONO}">
+    <text x="0" y="96" font-size="132" font-weight="700" fill="${COLORS.text3}">${fromText}</text>
+    <text x="${86 + fromText.length * 76}" y="90" font-size="96" font-weight="700" fill="${accent}">→</text>
+    <text x="${190 + fromText.length * 76}" y="96" font-size="132" font-weight="700" fill="${COLORS.text}">${toText}</text>
+    <text x="2" y="150" font-size="30" fill="${COLORS.text2}">${escapeXml(deltaText)}${ofTotal ? '  ·  ' + escapeXml(ofTotal) : ''}</text>
+  </g>
+
+  <!-- score + tier chip, bottom right -->
+  <g transform="translate(${W - 80},430)" text-anchor="end" font-family="${MONO}">
+    <text x="0" y="0" font-size="18" fill="${COLORS.text3}" letter-spacing="1">SCORE</text>
+    <text x="0" y="50" font-size="52" font-weight="700" fill="${COLORS.text}">${score}<tspan font-size="24" fill="${COLORS.text3}"> / 1000</tspan></text>
+    <text x="0" y="92" font-size="26" font-weight="600" fill="${TIER_ACCENT[tier]}">${escapeXml(label)}</text>
+  </g>
+
+  <!-- footer -->
+  <line x1="80" y1="556" x2="${W - 80}" y2="556" stroke="${COLORS.line}"/>
+  <text x="80" y="596" font-family="${MONO}" font-size="22" fill="${COLORS.text2}">the trust layer for agents that spend</text>
+  <text x="${W - 80}" y="596" text-anchor="end" font-family="${MONO}" font-size="22" fill="${accent}">kairune.online</text>
+</svg>`;
+}
+
 module.exports = {
   renderCardSvg,
   renderLeaderboardSvg,
   renderBadgeSvg,
   renderRankBadgeSvg,
+  renderMoveCardSvg,
   COLORS,
   TIER_ACCENT,
 };

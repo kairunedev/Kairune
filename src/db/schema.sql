@@ -319,3 +319,38 @@ CREATE TABLE IF NOT EXISTS wallet_proofs (
 );
 
 CREATE INDEX IF NOT EXISTS idx_wallet_proofs_wallet ON wallet_proofs(wallet);
+
+-- ---------------------------------------------------------------------------
+-- rank_history: an append-only log of leaderboard-rank changes.
+--
+-- Rank is otherwise computed live from stored scores and never remembered, so
+-- "who climbed today" and "how did this agent get here" were unanswerable. One
+-- row is written each time recalcAgent observes an agent's public rank actually
+-- move (the same moment the agent.rank_changed webhook fires). It stores both
+-- sides of the move so a mover feed or a shareable "climbed #12 -> #4" card can
+-- be built from the row alone, without recomputing history.
+--
+-- Only publicly-ranked agents produce rows: demo/test/non-EVM agents have no
+-- standing (getRank returns null) and are never recorded. A lower rank NUMBER
+-- is a better position, so direction 'up' means the number decreased.
+-- ---------------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS rank_history (
+  id             TEXT PRIMARY KEY,             -- uuid
+  agent_id       TEXT NOT NULL,
+  agent_handle   TEXT NOT NULL,                -- denormalised for feed display
+  previous_rank  INTEGER NOT NULL,             -- rank before the move
+  rank           INTEGER NOT NULL,             -- rank after the move
+  total          INTEGER NOT NULL,             -- leaderboard size at the time
+  previous_score INTEGER,                      -- score before, if known
+  score          INTEGER NOT NULL,             -- score after the move
+  tier           INTEGER NOT NULL,             -- tier after the move
+  label          TEXT NOT NULL,                -- tier label after the move
+  direction      TEXT NOT NULL                 -- 'up' (number fell) | 'down'
+                   CHECK (direction IN ('up', 'down')),
+  delta          INTEGER NOT NULL,             -- positions gained (>0) or lost (<0)
+  created_at     TEXT NOT NULL,
+  FOREIGN KEY (agent_id) REFERENCES agents(id) ON DELETE CASCADE
+);
+
+CREATE INDEX IF NOT EXISTS idx_rank_history_agent ON rank_history(agent_id, created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_rank_history_created ON rank_history(created_at DESC);

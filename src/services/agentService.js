@@ -190,6 +190,23 @@ const DEMO_EXCLUSION_SQL = ` AND NOT ${orTree([
 ])}`;
 
 /**
+ * The same demo/test exclusion, but for a query where the agents table is
+ * JOINed under an alias (e.g. `JOIN agents a`). DEMO_EXCLUSION_SQL references
+ * handle/wallet/operator as bare columns, which is ambiguous once another table
+ * is in scope. Rather than fragile string surgery, rebuild the predicate with
+ * every column qualified by the alias. Word boundaries (\b) keep `handle`
+ * inside `lower(handle)` from also matching a substring elsewhere.
+ * @param {string} alias
+ * @returns {string}
+ */
+function demoExclusionFor(alias) {
+  return DEMO_EXCLUSION_SQL
+    .replace(/\bhandle\b/g, `${alias}.handle`)
+    .replace(/\bwallet\b/g, `${alias}.wallet`)
+    .replace(/\boperator\b/g, `${alias}.operator`);
+}
+
+/**
  * List agents (leaderboard), ordered by highest score.
  * @param {{limit?:number, offset?:number, status?:string}} [opts]
  * @returns {Promise<object[]>}
@@ -845,6 +862,27 @@ async function recalcAgent(id) {
   if (agent && prevRankInfo) {
     const newRankInfo = await getRank(id);
     if (newRankInfo && newRankInfo.rank !== prevRankInfo.rank) {
+      // Lower rank number = better position, so a decrease is a promotion.
+      const direction = newRankInfo.rank < prevRankInfo.rank ? 'up' : 'down';
+
+      // Persist the move first so the mover feed and history survive even if the
+      // webhook fan-out later fails. Best-effort: a history write must never
+      // break a rescore, exactly like the webhook below.
+      await recordRankChange({
+        agent_id: agent.id,
+        agent_handle: agent.handle,
+        previous_rank: prevRankInfo.rank,
+        rank: newRankInfo.rank,
+        total: newRankInfo.total,
+        previous_score: prevScore,
+        score: newRankInfo.score,
+        tier: newRankInfo.tier,
+        label: newRankInfo.label,
+        direction,
+        // Positions gained: prev - new, so a promotion (#12 -> #4) is +8.
+        delta: prevRankInfo.rank - newRankInfo.rank,
+      });
+
       await emitRankChanged({
         agent_id: agent.id,
         agent_handle: agent.handle,
@@ -856,8 +894,7 @@ async function recalcAgent(id) {
         score: newRankInfo.score,
         tier: newRankInfo.tier,
         label: newRankInfo.label,
-        // Lower rank number = better position, so a decrease is a promotion.
-        direction: newRankInfo.rank < prevRankInfo.rank ? 'up' : 'down',
+        direction,
       });
     }
   }
@@ -901,6 +938,162 @@ async function emitRankChanged(data) {
   } catch {
     /* never let notifications affect scoring */
   }
+}
+
+/**
+ * Append one row to rank_history when an agent's public rank moves. Called by
+ * recalcAgent at the same moment the rank_changed webhook fires. Best-effort:
+ * a history write is fully swallowed so it can never break a rescore, mirroring
+ * the webhook emitters. The caller has already established the rank actually
+ * moved and the agent is publicly ranked.
+ * @param {object} m
+ * @returns {Promise<void>}
+ */
+async function recordRankChange(m) {
+  try {
+    const db = await getDb();
+    await db.execute({
+      sql: `INSERT INTO rank_history
+              (id, agent_id, agent_handle, previous_rank, rank, total,
+               previous_score, score, tier, label, direction, delta, created_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      args: [
+        crypto.randomUUID(),
+        m.agent_id,
+        m.agent_handle,
+        m.previous_rank,
+        m.rank,
+        m.total,
+        m.previous_score == null ? null : Math.round(Number(m.previous_score)),
+        Math.round(Number(m.score)),
+        Number(m.tier),
+        m.label,
+        m.direction,
+        Number(m.delta),
+        nowIso(),
+      ],
+    });
+  } catch {
+    /* history is a nice-to-have; never let it affect scoring */
+  }
+}
+
+/**
+ * An agent's own rank-movement log, newest first. The raw material for a
+ * "how did I get here" timeline and for the shareable move card.
+ * @param {string} idOrHandle
+ * @param {{limit?:number}} [opts]
+ * @returns {Promise<{handle:string, moves:object[]}|null>} null if unknown agent
+ */
+async function getRankHistory(idOrHandle, opts = {}) {
+  const agent = await getAgent(idOrHandle);
+  if (!agent) return null;
+  const limit = Math.max(1, Math.min(Number(opts.limit) || 20, 100));
+  const db = await getDb();
+  const res = await db.execute({
+    sql: `SELECT previous_rank, rank, total, previous_score, score, tier, label,
+                 direction, delta, created_at
+            FROM rank_history
+           WHERE agent_id = ?
+           ORDER BY created_at DESC
+           LIMIT ?`,
+    args: [agent.id, limit],
+  });
+  const moves = res.rows.map((r) => ({
+    previous_rank: Number(r.previous_rank),
+    rank: Number(r.rank),
+    total: Number(r.total),
+    previous_score: r.previous_score == null ? null : Number(r.previous_score),
+    score: Number(r.score),
+    tier: Number(r.tier),
+    label: r.label,
+    direction: r.direction,
+    delta: Number(r.delta),
+    at: r.created_at,
+  }));
+  return { handle: agent.handle, moves };
+}
+
+/**
+ * The biggest rank movers within a recent window — the "who's climbing" feed
+ * that a leaderboard-obsessed audience actually wants. Sums each agent's net
+ * position change over the window (so a climb-then-slip nets out honestly) and
+ * returns the largest absolute movers. Only agents still publicly ranked are
+ * included, so an agent that has since been suspended or excluded drops out.
+ *
+ * @param {{windowHours?:number, limit?:number, direction?:'up'|'down'|'all'}} [opts]
+ * @returns {Promise<{window_hours:number, generated_at:string, movers:object[]}>}
+ */
+async function getTopMovers(opts = {}) {
+  const windowHours = Math.max(1, Math.min(Number(opts.windowHours) || 24, 24 * 30));
+  const limit = Math.max(1, Math.min(Number(opts.limit) || 10, 50));
+  const dir = ['up', 'down', 'all'].includes(opts.direction) ? opts.direction : 'up';
+  const since = new Date(Date.now() - windowHours * 3600 * 1000).toISOString();
+  const db = await getDb();
+
+  // Net movement per agent over the window. first_rank / last_rank are taken at
+  // the window edges via correlated subqueries so the feed reads "went from
+  // #first to #last" truthfully even across several moves. Restricted to the
+  // current ranked universe by joining agents with the same exclusion as the
+  // leaderboard, so demo/test/suspended agents never surface.
+  const res = await db.execute({
+    sql: `SELECT h.agent_id,
+                 h.agent_handle,
+                 SUM(h.delta)                       AS net_delta,
+                 COUNT(*)                           AS moves,
+                 MAX(h.created_at)                  AS last_at,
+                 (SELECT h2.previous_rank FROM rank_history h2
+                   WHERE h2.agent_id = h.agent_id AND h2.created_at >= ?
+                   ORDER BY h2.created_at ASC  LIMIT 1) AS first_rank,
+                 (SELECT h3.rank FROM rank_history h3
+                   WHERE h3.agent_id = h.agent_id AND h3.created_at >= ?
+                   ORDER BY h3.created_at DESC LIMIT 1) AS last_rank,
+                 (SELECT h4.score FROM rank_history h4
+                   WHERE h4.agent_id = h.agent_id AND h4.created_at >= ?
+                   ORDER BY h4.created_at DESC LIMIT 1) AS last_score,
+                 (SELECT h5.tier FROM rank_history h5
+                   WHERE h5.agent_id = h.agent_id AND h5.created_at >= ?
+                   ORDER BY h5.created_at DESC LIMIT 1) AS last_tier,
+                 (SELECT h6.label FROM rank_history h6
+                   WHERE h6.agent_id = h.agent_id AND h6.created_at >= ?
+                   ORDER BY h6.created_at DESC LIMIT 1) AS last_label
+            FROM rank_history h
+            JOIN agents a ON a.id = h.agent_id
+           WHERE h.created_at >= ?${demoExclusionFor('a')}
+           GROUP BY h.agent_id, h.agent_handle
+           ORDER BY ABS(SUM(h.delta)) DESC, last_at DESC
+           LIMIT 500`,
+    args: [since, since, since, since, since, since],
+  });
+
+  let movers = res.rows.map((r) => {
+    const net = Number(r.net_delta) || 0;
+    return {
+      handle: r.agent_handle,
+      net_delta: net,
+      direction: net > 0 ? 'up' : net < 0 ? 'down' : 'flat',
+      from_rank: r.first_rank == null ? null : Number(r.first_rank),
+      to_rank: r.last_rank == null ? null : Number(r.last_rank),
+      score: r.last_score == null ? null : Number(r.last_score),
+      tier: r.last_tier == null ? null : Number(r.last_tier),
+      label: r.last_label || null,
+      moves: Number(r.moves) || 0,
+      last_move_at: r.last_at,
+    };
+  });
+
+  if (dir === 'up') movers = movers.filter((m) => m.net_delta > 0);
+  else if (dir === 'down') movers = movers.filter((m) => m.net_delta < 0);
+  else movers = movers.filter((m) => m.net_delta !== 0);
+
+  movers = movers.slice(0, limit);
+
+  return {
+    window_hours: windowHours,
+    direction: dir,
+    generated_at: nowIso(),
+    movers,
+  };
 }
 
 /**
@@ -948,6 +1141,8 @@ module.exports = {
   listAgents,
   getRank,
   getRankNeighbors,
+  getRankHistory,
+  getTopMovers,
   getTierProgress,
   getNextSteps,
   checkCounterparty,

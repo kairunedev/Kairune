@@ -139,6 +139,9 @@ router.get('/meta', (req, res) => {
     trust_sources_endpoint: '/api/agents/:id/trust-sources',
     rank_endpoint: '/api/agents/:id/rank',
     rank_neighbors_endpoint: '/api/agents/:id/rank/neighbors',
+    rank_history_endpoint: '/api/agents/:id/rank/history',
+    movers_endpoint: '/api/movers',
+    move_card_endpoint: '/a/:handle/move.svg',
     tier_progress_endpoint: '/api/agents/:id/tier',
     next_steps_endpoint: '/api/agents/:id/next-steps',
     counterparty_check_endpoint: '/api/counterparty/check',
@@ -555,6 +558,47 @@ router.get(
       return res.json({ ranked: false, handle: agent.handle, self: null });
     }
     res.json({ ranked: true, ...neighbors });
+  })
+);
+
+// Rank history — this agent's own log of leaderboard moves, newest first.
+// Where /rank is a single snapshot, this is the timeline: every time the agent
+// overtook someone or got overtaken, with both ranks, the delta and when. The
+// raw material for a "how did I get here" view and the shareable move card.
+// Public, no auth. 404 for an unknown agent. `moves` is [] for an agent that
+// has never moved (brand-new, or never publicly ranked). `?limit=` 1..100.
+router.get(
+  '/agents/:id/rank/history',
+  wrap(async (req, res) => {
+    const history = await agentService.getRankHistory(req.params.id, {
+      limit: req.query.limit,
+    });
+    if (!history) {
+      const err = new Error('Agent not found');
+      err.status = 404;
+      throw err;
+    }
+    res.json(history);
+  })
+);
+
+// Movers — the "who's climbing" feed. Aggregates rank_history over a recent
+// window and returns the biggest net movers, so a leaderboard-obsessed audience
+// can see momentum, not just a static ranking. Net movement is summed per agent
+// (a climb-then-slip nets out honestly) and only currently-ranked agents count.
+//
+// Query: `?window=` hours (1..720, default 24), `?limit=` (1..50, default 10),
+// `?direction=` up|down|all (default up — climbers, the thing people share).
+// Public, read-only, no auth. Always 200 with a (possibly empty) movers array.
+router.get(
+  '/movers',
+  wrap(async (req, res) => {
+    const out = await agentService.getTopMovers({
+      windowHours: req.query.window,
+      limit: req.query.limit,
+      direction: req.query.direction,
+    });
+    res.json(out);
   })
 );
 
