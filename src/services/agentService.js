@@ -9,9 +9,11 @@ const { getDb } = require('../db');
 const {
   computeScore,
   suggestedDailyCeiling,
+  tierForScore,
   TIER_LABELS,
   TIER_THRESHOLDS,
   MAX_SCORE,
+  SCORING_MODEL_VERSION,
 } = require('./trustScore');
 const { planNextTier } = require('./tierPlanner');
 const { assessCounterparty } = require('./counterpartyService');
@@ -24,6 +26,17 @@ const WALLET_REF_RE = /^0x[a-fA-F0-9]{40}$/;
 
 // Verdict ordering for compareCounterparties: lower sorts first (better pick).
 const COMPARE_VERDICT_RANK = { proceed: 0, review: 1, decline: 2 };
+
+// Why a rank moved. Mirrors the CHECK constraint on rank_history.cause; kept
+// here too because SQLite cannot add a CHECK to a migrated column, so the write
+// path is the only guard on an upgraded database.
+const RANK_CAUSES = new Set(['activity', 'neighbor_shift', 'scoring_migration']);
+
+// Upper bound on how many displaced agents one rescore will log. A move of a
+// few places is a personal event worth telling each neighbour about; a move of
+// two hundred is a bulk reordering, and writing a row for every agent involved
+// would let a single score update dominate the movement log.
+const NEIGHBOR_SHIFT_MAX_ROWS = 25;
 
 function nowIso() {
   return new Date().toISOString();
@@ -826,9 +839,24 @@ async function recalcAgent(id) {
 
   const result = computeScore(res.rows);
 
+  // Was the stored score produced by a DIFFERENT scoring model version? If so,
+  // any change this rescore produces is the model moving rather than the agent
+  // earning, and the history row should not claim otherwise. Checked before the
+  // UPDATE stamps the current version.
+  //
+  // A null stored version deliberately does NOT count. It means the agent was
+  // scored before versions were tracked (or has never been scored at all, which
+  // is every freshly created agent), so calling that a migration would mislabel
+  // ordinary first-time activity as the ruler moving.
+  const staleModel =
+    prev != null &&
+    prev.score_model_version != null &&
+    Number(prev.score_model_version) !== SCORING_MODEL_VERSION;
+
   await db.execute({
-    sql: `UPDATE agents SET score = ?, tier = ?, updated_at = ? WHERE id = ?`,
-    args: [result.score, result.tier, nowIso(), id],
+    sql: `UPDATE agents SET score = ?, tier = ?, score_model_version = ?, updated_at = ?
+           WHERE id = ?`,
+    args: [result.score, result.tier, SCORING_MODEL_VERSION, nowIso(), id],
   });
 
   const agent = await getAgent(id);
@@ -881,6 +909,26 @@ async function recalcAgent(id) {
         direction,
         // Positions gained: prev - new, so a promotion (#12 -> #4) is +8.
         delta: prevRankInfo.rank - newRankInfo.rank,
+        // Why it moved. A model-version change outranks the other readings: if
+        // the scoring function itself changed, the score difference is the
+        // ruler moving and calling it activity would be a lie. Otherwise, a
+        // changed score means the agent earned (or lost) the position, and an
+        // identical score means the field rearranged around it.
+        cause: staleModel
+          ? 'scoring_migration'
+          : Math.round(Number(prevScore)) === Math.round(Number(newRankInfo.score))
+            ? 'neighbor_shift'
+            : 'activity',
+      });
+
+      // One agent moving reorders everyone it passed. Log those agents too, so
+      // a rank change is recorded for whoever it actually happened to and not
+      // just for whoever triggered the rescore.
+      await recordNeighborShifts({
+        mover_id: agent.id,
+        previous_rank: prevRankInfo.rank,
+        rank: newRankInfo.rank,
+        total: newRankInfo.total,
       });
 
       await emitRankChanged({
@@ -955,8 +1003,9 @@ async function recordRankChange(m) {
     await db.execute({
       sql: `INSERT INTO rank_history
               (id, agent_id, agent_handle, previous_rank, rank, total,
-               previous_score, score, tier, label, direction, delta, created_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+               previous_score, score, tier, label, direction, delta,
+               cause, model_version, created_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       args: [
         crypto.randomUUID(),
         m.agent_id,
@@ -970,9 +1019,93 @@ async function recordRankChange(m) {
         m.label,
         m.direction,
         Number(m.delta),
+        RANK_CAUSES.has(m.cause) ? m.cause : 'activity',
+        SCORING_MODEL_VERSION,
         nowIso(),
       ],
     });
+  } catch {
+    /* history is a nice-to-have; never let it affect scoring */
+  }
+}
+
+/**
+ * Record the agents that were pushed aside when one agent's rank moved.
+ *
+ * The gap this closes: a rank is a position in a shared ordering, so it can
+ * change without the agent doing anything at all. If #12 climbs to #4, the
+ * agents that were sitting at #4..#11 are now at #5..#12. Their rank genuinely
+ * changed and they were never told, because the old write path only ever logged
+ * the agent being rescored. A leaderboard that reports movement only for
+ * whoever happens to trigger a recalculation is not a movement log.
+ *
+ * Why this is cheap rather than a board rescan: exactly one agent's score
+ * changes per rescore, so the reorder is a single element moving from position
+ * p to position q. Every agent strictly between those two positions shifts by
+ * exactly one place, in the opposite direction, and nobody outside that span
+ * moves at all. So the affected set is read directly by offset — no diffing of
+ * before/after snapshots, and the work is proportional to the distance moved
+ * instead of to the size of the board.
+ *
+ * Rows are tagged cause 'neighbor_shift' so a feed can separate "this agent did
+ * something" from "the field rearranged around it". Best-effort and fully
+ * swallowed, like every other history write.
+ *
+ * @param {{mover_id:string, previous_rank:number, rank:number, total:number}} m
+ * @returns {Promise<void>}
+ */
+async function recordNeighborShifts(m) {
+  try {
+    const prev = Number(m.previous_rank);
+    const next = Number(m.rank);
+    if (!prev || !next || prev === next) return;
+
+    const up = next < prev;
+    // Positions (in the post-move ordering) now occupied by the displaced set.
+    const start = up ? next + 1 : prev;
+    const count = Math.abs(prev - next);
+
+    // A single rescore can in principle displace the whole board, and writing a
+    // row per agent would turn one score update into hundreds of inserts. Past
+    // this many the shift is a bulk reordering rather than a personal event, so
+    // it is left out of the per-agent log instead of flooding it.
+    if (count > NEIGHBOR_SHIFT_MAX_ROWS) return;
+
+    const db = await getDb();
+    // Same universe and ordering as getRank, so the offsets line up with the
+    // ranks the API reports.
+    const res = await db.execute({
+      sql: `SELECT id, handle, score, created_at FROM agents
+             WHERE 1=1${DEMO_EXCLUSION_SQL}
+             ORDER BY score DESC, created_at ASC, id ASC
+             LIMIT ? OFFSET ?`,
+      args: [count, start - 1],
+    });
+
+    for (let i = 0; i < res.rows.length; i++) {
+      const row = res.rows[i];
+      if (row.id === m.mover_id) continue; // the mover is logged by its own path
+      const rank = start + i;
+      // The mover displaced them by one place, in the opposite direction.
+      const previousRank = up ? rank - 1 : rank + 1;
+      const score = Math.round(Number(row.score));
+      const { tier, label } = tierForScore(score);
+      await recordRankChange({
+        agent_id: row.id,
+        agent_handle: row.handle,
+        previous_rank: previousRank,
+        rank,
+        total: Number(m.total),
+        // Their score did not change — that is the whole point of the row.
+        previous_score: score,
+        score,
+        tier,
+        label,
+        direction: up ? 'down' : 'up',
+        delta: previousRank - rank,
+        cause: 'neighbor_shift',
+      });
+    }
   } catch {
     /* history is a nice-to-have; never let it affect scoring */
   }
@@ -992,7 +1125,7 @@ async function getRankHistory(idOrHandle, opts = {}) {
   const db = await getDb();
   const res = await db.execute({
     sql: `SELECT previous_rank, rank, total, previous_score, score, tier, label,
-                 direction, delta, created_at
+                 direction, delta, cause, model_version, created_at
             FROM rank_history
            WHERE agent_id = ?
            ORDER BY created_at DESC
@@ -1009,6 +1142,10 @@ async function getRankHistory(idOrHandle, opts = {}) {
     label: r.label,
     direction: r.direction,
     delta: Number(r.delta),
+    // Rows written before cause existed report 'activity' via the column
+    // default; their model_version is genuinely unknown and stays null.
+    cause: r.cause || 'activity',
+    model_version: r.model_version == null ? null : Number(r.model_version),
     at: r.created_at,
   }));
   return { handle: agent.handle, moves };
@@ -1021,15 +1158,31 @@ async function getRankHistory(idOrHandle, opts = {}) {
  * returns the largest absolute movers. Only agents still publicly ranked are
  * included, so an agent that has since been suspended or excluded drops out.
  *
- * @param {{windowHours?:number, limit?:number, direction?:'up'|'down'|'all'}} [opts]
+ * Defaults to cause 'activity', which is the honest reading of "who's
+ * climbing": movement an agent produced itself. Passive movement is recorded
+ * (it is real, and the displaced agent deserves to know) but it does not belong
+ * in a feed that implies achievement — otherwise one agent's rescore manufactures
+ * a page of climbers who did nothing. Pass cause 'all' for the raw ordering
+ * change, or a specific cause to inspect one kind of movement.
+ *
+ * @param {{windowHours?:number, limit?:number, direction?:'up'|'down'|'all',
+ *          cause?:'activity'|'neighbor_shift'|'scoring_migration'|'all'}} [opts]
  * @returns {Promise<{window_hours:number, generated_at:string, movers:object[]}>}
  */
 async function getTopMovers(opts = {}) {
   const windowHours = Math.max(1, Math.min(Number(opts.windowHours) || 24, 24 * 30));
   const limit = Math.max(1, Math.min(Number(opts.limit) || 10, 50));
   const dir = ['up', 'down', 'all'].includes(opts.direction) ? opts.direction : 'up';
+  const cause =
+    opts.cause === 'all' || RANK_CAUSES.has(opts.cause) ? opts.cause : 'activity';
   const since = new Date(Date.now() - windowHours * 3600 * 1000).toISOString();
   const db = await getDb();
+
+  // Applied to the aggregate AND to every window-edge subquery, so from_rank /
+  // to_rank describe the same subset of rows that net_delta was summed over.
+  // Filtering only the outer query would report a span the delta cannot explain.
+  const causeSql = cause === 'all' ? '' : ' AND cause = ?';
+  const edgeArgs = cause === 'all' ? [since] : [since, cause];
 
   // Net movement per agent over the window. first_rank / last_rank are taken at
   // the window edges via correlated subqueries so the feed reads "went from
@@ -1043,27 +1196,29 @@ async function getTopMovers(opts = {}) {
                  COUNT(*)                           AS moves,
                  MAX(h.created_at)                  AS last_at,
                  (SELECT h2.previous_rank FROM rank_history h2
-                   WHERE h2.agent_id = h.agent_id AND h2.created_at >= ?
+                   WHERE h2.agent_id = h.agent_id AND h2.created_at >= ?${causeSql}
                    ORDER BY h2.created_at ASC  LIMIT 1) AS first_rank,
                  (SELECT h3.rank FROM rank_history h3
-                   WHERE h3.agent_id = h.agent_id AND h3.created_at >= ?
+                   WHERE h3.agent_id = h.agent_id AND h3.created_at >= ?${causeSql}
                    ORDER BY h3.created_at DESC LIMIT 1) AS last_rank,
                  (SELECT h4.score FROM rank_history h4
-                   WHERE h4.agent_id = h.agent_id AND h4.created_at >= ?
+                   WHERE h4.agent_id = h.agent_id AND h4.created_at >= ?${causeSql}
                    ORDER BY h4.created_at DESC LIMIT 1) AS last_score,
                  (SELECT h5.tier FROM rank_history h5
-                   WHERE h5.agent_id = h.agent_id AND h5.created_at >= ?
+                   WHERE h5.agent_id = h.agent_id AND h5.created_at >= ?${causeSql}
                    ORDER BY h5.created_at DESC LIMIT 1) AS last_tier,
                  (SELECT h6.label FROM rank_history h6
-                   WHERE h6.agent_id = h.agent_id AND h6.created_at >= ?
+                   WHERE h6.agent_id = h.agent_id AND h6.created_at >= ?${causeSql}
                    ORDER BY h6.created_at DESC LIMIT 1) AS last_label
             FROM rank_history h
             JOIN agents a ON a.id = h.agent_id
-           WHERE h.created_at >= ?${demoExclusionFor('a')}
+           WHERE h.created_at >= ?${cause === 'all' ? '' : ' AND h.cause = ?'}${demoExclusionFor('a')}
            GROUP BY h.agent_id, h.agent_handle
            ORDER BY ABS(SUM(h.delta)) DESC, last_at DESC
            LIMIT 500`,
-    args: [since, since, since, since, since, since],
+    args: [
+      ...edgeArgs, ...edgeArgs, ...edgeArgs, ...edgeArgs, ...edgeArgs, ...edgeArgs,
+    ],
   });
 
   let movers = res.rows.map((r) => {
@@ -1091,6 +1246,7 @@ async function getTopMovers(opts = {}) {
   return {
     window_hours: windowHours,
     direction: dir,
+    cause,
     generated_at: nowIso(),
     movers,
   };
@@ -1143,6 +1299,7 @@ module.exports = {
   getRankNeighbors,
   getRankHistory,
   getTopMovers,
+  RANK_CAUSES,
   getTierProgress,
   getNextSteps,
   checkCounterparty,

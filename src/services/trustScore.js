@@ -18,6 +18,22 @@
  *    Only verified attestations from independent issuers lift that cap.
  */
 
+// Version of the scoring model itself. Bump this in the SAME commit as any
+// change that makes computeScore return a different number for identical input
+// — new/changed KIND_WEIGHTS, tier thresholds, decay, caps, the corroboration
+// ceiling, the integrity discount.
+//
+// Why it exists: when the model changes, every agent's score moves at once and
+// so does every rank. Nobody earned that. Without a version there is no way to
+// tell "this agent improved" from "I edited a weight", and an append-only
+// movement log will happily present the second as the first. rank_history
+// stamps this on every row so a scoring migration is attributable after the
+// fact instead of being indistinguishable from real activity.
+//
+// Purely descriptive: nothing branches on it, so bumping it can never change a
+// score. It is a label on history, not an input to the maths.
+const SCORING_MODEL_VERSION = 1;
+
 // Base weight for each attestation kind.
 const KIND_WEIGHTS = Object.freeze({
   task_completed: 6,
@@ -445,6 +461,7 @@ function erc8126RiskTier(risk) {
 }
 
 module.exports = {
+  SCORING_MODEL_VERSION,
   KIND_WEIGHTS,
   NEGATIVE_KINDS,
   TIER_THRESHOLDS,

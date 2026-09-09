@@ -109,8 +109,40 @@ async function initSchema(c) {
   await ensureSpendColumns(c);
   await ensurePermissionColumns(c);
   await ensureAgentColumns(c);
+  await ensureRankHistoryColumns(c);
   await ensureSpendEventsConstraint(c);
   await ensureIndexMigration(c);
+}
+
+/**
+ * Idempotently add the movement-attribution columns to an existing rank_history
+ * table. CREATE TABLE IF NOT EXISTS won't alter a table that already exists, so
+ * they go on via PRAGMA table_info + ALTER.
+ *
+ * `cause` defaults to 'activity', which is a deliberate, slightly generous read
+ * of the rows written before this feature: they were all produced by a rescore
+ * of that specific agent, so activity is the accurate label for the vast
+ * majority. `model_version` stays NULL for them because it genuinely was not
+ * recorded — inventing a version number would be worse than admitting it is
+ * unknown.
+ *
+ * SQLite cannot add a CHECK constraint to an existing column, so the constraint
+ * lives on fresh installs only. The write path validates the value anyway, so a
+ * migrated table cannot pick up a bad cause in practice.
+ * @param {import('@libsql/client').Client} c
+ */
+async function ensureRankHistoryColumns(c) {
+  const info = await c.execute('PRAGMA table_info(rank_history)');
+  if (!info.rows.length) return; // table not created yet; schema.sql handles it
+  const existing = new Set(info.rows.map((r) => r.name));
+  if (!existing.has('cause')) {
+    await c.execute(
+      `ALTER TABLE rank_history ADD COLUMN cause TEXT NOT NULL DEFAULT 'activity'`
+    );
+  }
+  if (!existing.has('model_version')) {
+    await c.execute('ALTER TABLE rank_history ADD COLUMN model_version INTEGER');
+  }
 }
 
 /**
@@ -129,6 +161,11 @@ async function ensureAgentColumns(c) {
   const existing = new Set(info.rows.map((r) => r.name));
   if (!existing.has('owner_locked_at')) {
     await c.execute('ALTER TABLE agents ADD COLUMN owner_locked_at TEXT');
+  }
+  // Which scoring model version produced the stored score. Stays NULL for
+  // agents scored before it was tracked; the first rescore stamps it.
+  if (!existing.has('score_model_version')) {
+    await c.execute('ALTER TABLE agents ADD COLUMN score_model_version INTEGER');
   }
 }
 

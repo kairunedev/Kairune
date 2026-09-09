@@ -22,6 +22,12 @@ CREATE TABLE IF NOT EXISTS agents (
   -- permission action for it requires a fresh EIP-191 proof. Additive and
   -- backward compatible: agents created before this feature read as unlocked.
   owner_locked_at TEXT,
+  -- trustScore.SCORING_MODEL_VERSION that produced the score currently stored
+  -- above. Purely for attribution: when a rescore finds this behind the current
+  -- version, any rank change it causes is the scoring model moving rather than
+  -- the agent earning, and rank_history says so. NULL means "scored before the
+  -- version was tracked", which is honest rather than a guess.
+  score_model_version INTEGER,
   created_at    TEXT NOT NULL,
   updated_at    TEXT NOT NULL
 );
@@ -348,6 +354,21 @@ CREATE TABLE IF NOT EXISTS rank_history (
   direction      TEXT NOT NULL                 -- 'up' (number fell) | 'down'
                    CHECK (direction IN ('up', 'down')),
   delta          INTEGER NOT NULL,             -- positions gained (>0) or lost (<0)
+  -- WHY the position changed. A movement log that records only the delta is
+  -- honest about arithmetic and silent about meaning: "climbed 8 places" reads
+  -- identically whether the agent earned it, a neighbour collapsed, or someone
+  -- edited a weight in the scoring function. Storing the cause as a field
+  -- rather than filtering at write time keeps the log append-only and complete,
+  -- and lets each surface decide what it is willing to call movement.
+  --   'activity'          - this agent's own attestations changed its score.
+  --   'neighbor_shift'    - its score did NOT change; others moved around it.
+  --   'scoring_migration' - the model version changed; the ruler moved, not
+  --                         the runner.
+  cause          TEXT NOT NULL DEFAULT 'activity'
+                   CHECK (cause IN ('activity', 'neighbor_shift', 'scoring_migration')),
+  -- trustScore.SCORING_MODEL_VERSION at the time of the move, so a day when
+  -- "everyone climbed" can be attributed to a model change after the fact.
+  model_version  INTEGER,
   created_at     TEXT NOT NULL,
   FOREIGN KEY (agent_id) REFERENCES agents(id) ON DELETE CASCADE
 );

@@ -588,7 +588,10 @@ router.get(
 // (a climb-then-slip nets out honestly) and only currently-ranked agents count.
 //
 // Query: `?window=` hours (1..720, default 24), `?limit=` (1..50, default 10),
-// `?direction=` up|down|all (default up — climbers, the thing people share).
+// `?direction=` up|down|all (default up — climbers, the thing people share),
+// `?cause=` activity|neighbor_shift|scoring_migration|all (default activity —
+// movement the agent produced itself, rather than positions that shifted because
+// someone else was rescored or because the scoring model changed).
 // Public, read-only, no auth. Always 200 with a (possibly empty) movers array.
 router.get(
   '/movers',
@@ -597,6 +600,7 @@ router.get(
       windowHours: req.query.window,
       limit: req.query.limit,
       direction: req.query.direction,
+      cause: req.query.cause,
     });
     res.json(out);
   })
