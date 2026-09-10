@@ -334,10 +334,15 @@ var Kairune = class _Kairune {
    * 'decline' }` instead of throwing, so "unknown counterparty" is a normal
    * answer you can branch on. An unresolvable non-wallet reference throws
    * KairuneError(404).
+   *
+   * Pass `sign: true` to also get `attestation` — the same verdict signed with
+   * the platform key, so you can attach an attributable go/no-go to an escrow
+   * job and let the seller or an arbiter verify it without trusting your copy.
    */
   async checkCounterparty(counterparty, opts = {}) {
     const body = { counterparty };
     if (opts.amount != null) body.amount = opts.amount;
+    if (opts.sign === true) body.sign = true;
     return this.request("POST", "/counterparty/check", body);
   }
   /**

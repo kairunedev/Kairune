@@ -502,6 +502,35 @@ interface WalletProof {
 }
 type CounterpartyCheckStatus = 'pass' | 'warn' | 'fail';
 type CounterpartyVerdict = 'proceed' | 'review' | 'decline';
+/**
+ * A signed, non-repudiable counterparty verdict. Returned under
+ * `CounterpartyReport.attestation` when a check is requested with `sign: true`.
+ * The signature is an Ed25519 signature (the platform's receipt-signing key)
+ * over `signed_fields` only — the decision, the counterparty identity, the
+ * amount the verdict was scoped to, score/tier, and the timestamp. Verify it
+ * offline with `public_key`, or POST { mode:'verdict', public_key, signature,
+ * fields: signed_fields } to `/api/verify`.
+ */
+interface SignedVerdict {
+    signed_fields: {
+        counterparty_handle: string | null;
+        counterparty_wallet: string | null;
+        issued_at: string;
+        registered: boolean;
+        requested_amount: number | null;
+        score: number | null;
+        suggested_max_amount: number | null;
+        tier: number | null;
+        verdict: CounterpartyVerdict;
+    };
+    canonical: string;
+    signature: string;
+    algorithm: 'ed25519';
+    key_id: string | null;
+    public_key: string;
+    ephemeral_key: boolean;
+    signed_field_order: string[];
+}
 /** One named check that fed into the counterparty verdict. */
 interface CounterpartyCheck {
     id: string;
@@ -555,6 +584,8 @@ interface CounterpartyReport {
     } | null;
     /** Present only when registered === false. */
     wallet?: string | null;
+    /** Present only when the check was requested with `sign: true`. */
+    attestation?: SignedVerdict;
 }
 /**
  * One candidate inside a counterparty comparison — the same assessment
@@ -758,9 +789,14 @@ declare class Kairune {
      * 'decline' }` instead of throwing, so "unknown counterparty" is a normal
      * answer you can branch on. An unresolvable non-wallet reference throws
      * KairuneError(404).
+     *
+     * Pass `sign: true` to also get `attestation` — the same verdict signed with
+     * the platform key, so you can attach an attributable go/no-go to an escrow
+     * job and let the seller or an arbiter verify it without trusting your copy.
      */
     checkCounterparty(counterparty: string, opts?: {
         amount?: number;
+        sign?: boolean;
     }): Promise<CounterpartyReport>;
     /**
      * Compare competing counterparties and pick one.
@@ -1063,4 +1099,4 @@ declare class Kairune {
     }>;
 }
 
-export { type Agent, type AgentSpend, type Attestation, type Budget, type CounterpartyCandidate, type CounterpartyCheck, type CounterpartyCheckStatus, type CounterpartyComparison, type CounterpartyPolicy, type CounterpartyReport, type CounterpartyVerdict, type FeedEvent, type IssuerRequest, Kairune, KairuneError, type KairuneOptions, type Meta, type OwnerLockResult, type OwnerLockStatus, type Permission, type PermissionPayee, type PlatformKey, type Spend, type SpendBlocked, type SpendPage, type SpendPaging, type SpendPreview, type SpendPreviewReason, type SpendQuery, type SpendReceipt, type SpendResult, type SpendSummary, type Stats, type WalletChallenge, type WalletProfile, type WalletProof, type Webhook, Kairune as default };
+export { type Agent, type AgentSpend, type Attestation, type Budget, type CounterpartyCandidate, type CounterpartyCheck, type CounterpartyCheckStatus, type CounterpartyComparison, type CounterpartyPolicy, type CounterpartyReport, type CounterpartyVerdict, type FeedEvent, type IssuerRequest, Kairune, KairuneError, type KairuneOptions, type Meta, type OwnerLockResult, type OwnerLockStatus, type Permission, type PermissionPayee, type PlatformKey, type SignedVerdict, type Spend, type SpendBlocked, type SpendPage, type SpendPaging, type SpendPreview, type SpendPreviewReason, type SpendQuery, type SpendReceipt, type SpendResult, type SpendSummary, type Stats, type WalletChallenge, type WalletProfile, type WalletProof, type Webhook, Kairune as default };

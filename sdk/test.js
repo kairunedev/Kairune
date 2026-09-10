@@ -335,6 +335,46 @@ async function resolveTarget() {
     fail++; console.log(FAIL, 'spend() idempotency threw unexpectedly:', e.message);
   }
 
+  // --- COUNTERPARTY CHECK ---
+  // This method had no coverage at all, which is how a build that silently
+  // dropped the `sign` flag passed the suite for five days. An unregistered
+  // wallet is enough: it still produces a signed decline, so the assertions
+  // below test the transport of the option rather than the scoring behind it.
+  try {
+    const unknown = '0x' + '4b'.repeat(20);
+
+    const plain = await k.checkCounterparty(unknown);
+    assert('checkCounterparty() returns a verdict', typeof plain.verdict === 'string');
+    assert('checkCounterparty() is unsigned by default', plain.attestation === undefined);
+
+    const signed = await k.checkCounterparty(unknown, { sign: true });
+    assert('checkCounterparty({sign:true}) returns an attestation', !!signed.attestation);
+    if (signed.attestation) {
+      const a = signed.attestation;
+      assert('attestation is ed25519', a.algorithm === 'ed25519');
+      assert('attestation carries a signature', typeof a.signature === 'string' && a.signature.length > 0);
+      assert('attestation publishes its public key', typeof a.public_key === 'string' && a.public_key.length > 0);
+      assert('attestation lists the signed field order', Array.isArray(a.signed_field_order) && a.signed_field_order.length > 0);
+      assert(
+        'attestation verdict matches the report',
+        a.signed_fields && a.signed_fields.verdict === signed.verdict
+      );
+      // The signature must cover the decision, not the prose around it.
+      assert(
+        'signed fields exclude the human-readable checks',
+        !('checks' in a.signed_fields) && !('reasons' in a.signed_fields)
+      );
+    }
+
+    const scoped = await k.checkCounterparty(unknown, { amount: 25, sign: true });
+    assert(
+      'checkCounterparty({amount,sign}) scopes the signed amount',
+      !!scoped.attestation && scoped.attestation.signed_fields.requested_amount === 25
+    );
+  } catch (e) {
+    fail++; console.log(FAIL, 'checkCounterparty() threw unexpectedly:', e.message);
+  }
+
   // --- WRITE ENDPOINTS (with admin key) ---
   if (process.env.ADMIN_KEY) {
     const kw = new Kairune({ adminKey: process.env.ADMIN_KEY, baseUrl: base });
