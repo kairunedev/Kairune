@@ -292,7 +292,9 @@ app.get('/a/:handle/card.svg', async (req, res, next) => {
       );
     }
     // Scores are rederived on writes (attestation/spend), so the stored row is
-    // already trusted — no need to rewrite it on every hotlinked image hit.
+    // already trusted — no need to rewrite it on every hotlinked image hit. The
+    // attestation count is still read, because the card publishes it as a stat.
+    const atts = await attestationService.listAttestations(base.id, { limit: 200 });
     const label = trustScore.labelFor(base.score) || 'UNRATED';
     const svg = renderCardSvg(
       { ...base, label, suggested_daily_ceiling: trustScore.suggestedDailyCeiling(base.score) },
@@ -320,8 +322,11 @@ app.get('/a/:handle/card.png', async (req, res, next) => {
     }
     const atts = await attestationService.listAttestations(base.id, { limit: 200 });
     const label = trustScore.labelFor(base.score) || 'UNRATED';
+    // getAgent() does not carry suggested_daily_ceiling — it is derived. Without
+    // this the card rendered "$0/day", and since card.png is the og:image, that
+    // is the number every social unfurl showed.
     const svg = renderCardSvg(
-      { ...base, label },
+      { ...base, label, suggested_daily_ceiling: trustScore.suggestedDailyCeiling(base.score) },
       { attestations: (atts || []).length }
     );
     res.setHeader('Cache-Control', 'public, max-age=300, s-maxage=300');
