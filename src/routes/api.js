@@ -15,6 +15,7 @@
  *   GET    /api/agents/:id/next-steps         simulated route to the next tier + downgrade risk
  *   GET    /api/agents/:id/spends             merged spend history across all of the agent's permissions
  *   GET    /api/agents/:id/spend-summary      aggregated spend totals by permission / category / payee
+ *   GET    /api/agents/:id/counterparty-exposure  spend per payee joined with each payee's LIVE verdict — surfaces risk drift + concentration
  *   POST   /api/counterparty/check           pre-flight go/no-go before paying another agent ({sign:true} for a signed verdict)
  *   POST   /api/counterparty/compare         rank competing counterparties, pick a winner
  *   PATCH  /api/agents/:id/status             suspend / activate an agent
@@ -61,6 +62,7 @@ const issuerRequestService = require('../services/issuerRequestService');
 const webhookService = require('../services/webhookService');
 const verification = require('../services/verification');
 const receiptService = require('../services/receiptService');
+const counterpartyExposure = require('../services/counterpartyExposure');
 const replayGuard = require('../services/replayGuard');
 const trustScore = require('../services/trustScore');
 const issuerDiversity = require('../services/issuerDiversity');
@@ -169,6 +171,12 @@ router.get('/meta', (req, res) => {
     spend_summary_endpoint: '/api/agents/:id/spend-summary',
     spend_history_filters: ['since', 'until', 'payee', 'idempotency_key'],
     max_spend_page: spendService.MAX_SPEND_PAGE,
+    // Counterparty exposure — spend per payee joined with each payee's LIVE
+    // verdict, so an operator can see how much spend now rides on a payee that
+    // has since become risky, and whether one payee dominates outbound spend.
+    counterparty_exposure_endpoint: '/api/agents/:id/counterparty-exposure',
+    counterparty_exposure_concentration_share: counterpartyExposure.CONCENTRATION_SHARE,
+    counterparty_exposure_max_payees: counterpartyExposure.MAX_PAYEES_ASSESSED,
     spend_receipts: true,
     spend_receipt_endpoint: '/api/spends/:sid/receipt',
     platform_key_endpoint: '/api/platform-key',
@@ -906,6 +914,38 @@ router.get(
       topPayees: req.query.top_payees,
     });
     res.json({ summary: { ...summary, handle: agent.handle } });
+  })
+);
+
+// Counterparty exposure — how much of this agent's spend rides on counterparties
+// that are risky NOW.
+//
+// spend-summary says how much went to each payee; POST /counterparty/check says
+// whether one payee is safe. Neither answers the after-the-fact question an
+// operator actually has: "a vendor I already paid just collected a chargeback —
+// how exposed am I?" This joins the two — it recomputes a live verdict for every
+// payee the agent has paid over the window, attaches each one's spend share, and
+// rolls up the total spend sitting on review/decline (or unresolvable) payees,
+// plus any single payee holding more than half of all outbound spend.
+//
+// Read-only and admin-gated like the other spend reports: a payee list is
+// operator data, unlike the anonymised public /api/feed.
+router.get(
+  '/agents/:id/counterparty-exposure',
+  wrap(async (req, res) => {
+    requireAdmin(req);
+    const agent = await agentService.getAgent(req.params.id);
+    if (!agent) {
+      const err = new Error('Agent not found');
+      err.status = 404;
+      throw err;
+    }
+    const report = await counterpartyExposure.agentExposure(agent.id, {
+      since: req.query.since,
+      until: req.query.until,
+      topPayees: req.query.top_payees,
+    });
+    res.json({ ...report, handle: agent.handle });
   })
 );
 
